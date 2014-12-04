@@ -4,11 +4,15 @@ use strict;
 use warnings;
 no warnings('once');
 
+use Auth;
 use Conf;
 use CGI;
 use JSON;
+use URI::Escape;
+use MIME::Base64;
 use LWP::UserAgent;
 use HTTP::Request::Common;
+use Storable qw(dclone);
 use Digest::MD5 qw(md5_hex md5_base64);
 
 1;
@@ -21,7 +25,7 @@ sub new {
     eval {
         require Cache::Memcached;
         Cache::Memcached->import();
-        $memd = new Cache::Memcached {'servers' => [$Conf::web_memcache], 'debug' => 0, 'compress_threshold' => 10_000};
+        $memd = new Cache::Memcached {'servers' => [$Conf::web_memcache || ''], 'debug' => 0, 'compress_threshold' => 10_000};
     };
     my $agent = LWP::UserAgent->new;
     my $json  = JSON->new;
@@ -29,20 +33,33 @@ sub new {
     $json = $json->utf8();
     $json->max_size(0);
     $json->allow_nonref;
-    my $html_messages = { 200 => "OK",
-                          201 => "Created",
-                          204 => "No Content",
-                          400 => "Bad Request",
-                          401 => "Unauthorized",
-			  404 => "Not Found",
-			  416 => "Request Range Not Satisfiable",
-			  500 => "Internal Server Error",
-			  501 => "Not Implemented",
-			  503 => "Service Unavailable",
-			  507 => "Storing object failed",
-			  -32602 => "Invalid params",
-			  -32603 => "Internal error"
-			};
+    
+    my $html_messages = {
+        200 => "OK",
+        201 => "Created",
+        204 => "No Content",
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        404 => "Not Found",
+	    416 => "Request Range Not Satisfiable",
+	    500 => "Internal Server Error",
+	    501 => "Not Implemented",
+	    503 => "Service Unavailable",
+	    507 => "Storing object failed",
+	    -32602 => "Invalid params",
+	    -32603 => "Internal error"
+	};
+	
+	# get mgrast token
+    #my $mgrast_token = undef;
+    #if ($Conf::mgrast_oauth_name && $Conf::mgrast_oauth_pswd) {
+    #    my $key = encode_base64($Conf::mgrast_oauth_name.':'.$Conf::mgrast_oauth_pswd);
+    #    my $rep = Auth::globus_token($key);
+    #    $mgrast_token = $rep ? $rep->{access_token} : undef;
+    #}
+    #### changed because globus has hard time handeling multiple tokens
+    my $mgrast_token = $Conf::mgrast_oauth_token || undef;
+	
     # create object
     my $self = {
         format        => "application/json",
@@ -56,6 +73,7 @@ sub new {
         resource      => $params->{resource},
         user          => $params->{user},
         token         => $params->{cgi}->http('HTTP_AUTH') || undef,
+        mgrast_token  => $mgrast_token,
         json_rpc      => $params->{json_rpc} ? $params->{json_rpc} : 0,
         json_rpc_id   => ($params->{json_rpc} && exists($params->{json_rpc_id})) ? $params->{json_rpc_id} : undef,
         html_messages => $html_messages,
@@ -127,6 +145,10 @@ sub token {
     my ($self) = @_;
     return $self->{token};
 }
+sub mgrast_token {
+    my ($self) = @_;
+    return $self->{mgrast_token};
+}
 sub json_rpc {
     my ($self) = @_;
     return $self->{json_rpc};
@@ -181,14 +203,14 @@ sub source {
 
 # hardcoded hierarchy info
 sub hierarchy {
-    return { organism => [ ['strain', 'bottom organism taxanomic level'],
+    return { organism => [ ['strain', 'bottom organism taxonomic level'],
                            ['species', 'organism type level'],
-                           ['genus', 'organism taxanomic level'],
-                           ['family', 'organism taxanomic level'],
-                           ['order', 'organism taxanomic level'],
-                           ['class', 'organism taxanomic level'],
-                           ['phylum', 'organism taxanomic level'],
-                           ['domain', 'top organism taxanomic level'] ],
+                           ['genus', 'organism taxonomic level'],
+                           ['family', 'organism taxonomic level'],
+                           ['order', 'organism taxonomic level'],
+                           ['class', 'organism taxonomic level'],
+                           ['phylum', 'organism taxonomic level'],
+                           ['domain', 'top organism taxonomic level'] ],
              ontology => [ ['function', 'bottom function ontology level'],
                            ['level3', 'function ontology level' ],
                            ['level2', 'function ontology level' ],
@@ -213,8 +235,35 @@ sub pipeline_opts {
              'priority',
              'screen_indexes',
              'sequence_type_guess',
-             'sequencing_method_guess'  
+             'sequencing_method_guess'
     ];
+}
+
+# hardcoded list of metagenome pipeline paramters with defaults
+sub pipeline_defaults {
+    return {
+        'file_type' => 'fna',
+        'filter_ln' => 'yes',
+        'filter_ln_mult' => '2.0',
+        'filter_ambig' => 'yes',
+        'max_ambig' => '5',
+        'dynamic_trim' => 'yes',
+        'min_qual' => '15',
+        'max_lqb' => '5',
+        'dereplicate' => 'yes',
+        'prefix_length' => '50',
+        'bowtie' => 'yes',
+        'screen_indexes' => 'h_sapiens_asm',
+        'fgs_type' => '454',
+        'rna_pid' => '97',
+        'aa_pid' => '90',
+        'm5nr_sims_version' => '1',
+        'm5rna_sims_version' => '1',
+        'm5nr_annotation_version' => '1',
+        'm5rna_annotation_version' => '1',
+        'assembled' => 'no',
+        'publish_priority' => 'never'
+    };
 }
 
 # hardcoded list of metagenome sequence statistics names
@@ -488,7 +537,7 @@ sub return_data {
 # print a string to download
 sub download_text {
     my ($self, $text, $name) = @_;
-    print "Content-Type:application/x-download\n";  
+    print "Content-Type:application/x-download\n";
     print "Access-Control-Allow-Origin: *\n";
     print "Content-Length: ".(length($text))."\n";
     print "Content-Disposition:attachment;filename=$name\n\n";
@@ -496,80 +545,130 @@ sub download_text {
     exit 0;
 }
 
-# print a file to download
-sub return_file {
-    my ($self, $filedir, $filename) = @_;
-    
-    unless ($filename && "$filedir/$filename" && (-s "$filedir/$filename")) {
-	    $self->return_data( {"ERROR" => "could not access filesystem"}, 404 );
+# stream a file from shock to browser
+sub return_shock_file {
+    my ($self, $id, $size, $name, $auth) = @_;
+        
+    my $response = undef;
+    # print headers
+    print "Content-Type:application/x-download\n";
+    print "Access-Control-Allow-Origin: *\n";
+    if ($size) {
+        print "Content-Length: ".$size."\n";
     }
-    if (open(FH, "<$filedir/$filename")) {
-	    print "Content-Type:application/x-download\n";  
-	    print "Access-Control-Allow-Origin: *\n";
-	    print "Content-Length: " . (stat("$filedir/$filename"))[7] . "\n";
-	    print "Content-Disposition:attachment;filename=$filename\n\n";
-	    while (<FH>) {
-	        print $_;
-	    }
-	    close FH;
-	    exit 0;
-    } else {
-	    $self->return_data( {"ERROR" => "could not access requested file: $filename"}, 404 );
+    print "Content-Disposition:attachment;filename=".$name."\n\n";
+    eval {
+        my $url = $Conf::shock_url.'/node/'.$id.'?download_raw';
+        my @args = (
+            $auth ? ('Authorization', "OAuth $auth") : (),
+            ':read_size_hint', 8192,
+            ':content_cb', sub{ my ($chunk) = @_; print $chunk; }
+        );
+        # print content
+        $response = $self->agent->get($url, @args);
+    };
+    if ($@ || (! $response)) {
+        print "ERROR (500): Unable to retrieve file from Shock server\n";
     }
+    exit 0;
 }
 
-sub get_sequence_sets {
-    my ($self, $job) = @_;
-  
-    my $mgid = $job->metagenome_id;
-    my $rdir = $job->download_dir;
-    my $adir = $job->analysis_dir;
+## download array of info for metagenome files in shock
+sub get_download_set {
+    my ($self, $mgid, $auth, $seq_only) = @_;
+
+    my %seen = ();
+    my %subset = ('preprocess' => 1, 'dereplication' => 1, 'screen' => 1);
     my $stages = [];
-    if (opendir(my $dh, $rdir)) {
-        my @rawfiles = sort grep { /^.*(fna|fastq)(\.gz)?$/ && -f "$rdir/$_" } readdir($dh);
-        closedir $dh;
-        my $fnum = 1;
-        foreach my $rf (@rawfiles) {
-            my ($jid, $ftype) = $rf =~ /^(\d+)\.(fna|fastq)(\.gz)?$/;
-            push(@$stages, { id  => "mgm".$mgid,
-                             url => $self->cgi->url.'/download/mgm'.$mgid.'?file=050.'.$fnum,
-		                     stage_id   => "050",
-		                     stage_name => "upload",
-		                     stage_type => $ftype,
-		                     file_id    => "050.".$fnum,
-		                     file_name  => $rf });
-            $fnum += 1;
+    my $mgdata = $self->get_shock_query({'type' => 'metagenome', 'id' => 'mgm'.$mgid}, $auth);
+    @$mgdata = grep { exists($_->{attributes}{stage_id}) && exists($_->{attributes}{data_type}) } @$mgdata;
+    @$mgdata = sort { ($a->{attributes}{stage_id} cmp $b->{attributes}{stage_id}) ||
+                        ($a->{attributes}{data_type} cmp $b->{attributes}{data_type}) } @$mgdata;
+    foreach my $node (@$mgdata) {
+        my $attr = $node->{attributes};
+        my $file = $node->{file};
+        # only return sequence files
+        if ( $seq_only &&
+             ($attr->{data_type} ne 'sequence') && 
+             ($attr->{file_format} ne 'fasta') &&
+             ($attr->{file_format} ne 'fastq') )
+        {
+            next;
         }
-    }
-    if (opendir(my $dh, $adir)) {
-        my @stagefiles = sort grep { /^.*(fna|faa)(\.gz)?$/ && -f "$adir/$_" } readdir($dh);
-        closedir $dh;
-        my $stagehash = {};
-        foreach my $sf (@stagefiles) {
-            my ($stageid, $stagename, $stageresult) = $sf =~ /^(\d+)\.([^\.]+)\.([^\.]+)\.(fna|faa)(\.gz)?$/;
-            next unless ($stageid && $stagename && $stageresult);
-            if (exists($stagehash->{$stageid})) {
-	            $stagehash->{$stageid}++;
-            } else {
-	            $stagehash->{$stageid} = 1;
+        if (exists $seen{$attr->{stage_id}}) {
+            $seen{$attr->{stage_id}} += 1;
+        } else {
+            $seen{$attr->{stage_id}} = 1;
+        }
+        my $file_id = $attr->{stage_id}.'.'.$seen{$attr->{stage_id}};
+        my $data = { id  => "mgm".$mgid,
+		             url => $self->cgi->url.'/download/mgm'.$mgid.'?file='.$file_id,
+		             node_id    => $node->{id},
+		             stage_id   => $attr->{stage_id},
+		             stage_name => $attr->{stage_name},
+		             data_type  => $attr->{data_type},
+		             file_id    => $file_id,
+		             file_size  => $file->{size} || undef,
+		             file_md5   => $file->{checksum}{md5} || undef
+		};
+		foreach my $label (('statistics', 'seq_format', 'file_format', 'cluster_percent')) {
+		    if (exists $attr->{$label}) {
+                $data->{$label} = $attr->{$label};
             }
-            push(@$stages, { id  => "mgm".$mgid,
-                             url => $self->cgi->url.'/download/mgm'.$mgid.'?file='.$stageid.'.'.$stagehash->{$stageid},
-		                     stage_id   => $stageid,
-		                     stage_name => $stagename,
-		                     stage_type => $stageresult,
-		                     file_id    => $stageid.".".$stagehash->{$stageid},
-		                     file_name  => $sf });
+		}
+        # rename for subset
+        if (exists $subset{$data->{stage_name}}) {
+            $data->{stage_name} .= ($attr->{data_type} eq 'removed') ? '.removed' : '.passed';
         }
+        # rename for cluster
+        if ($data->{stage_name} =~ /\.cluster$/) {
+            $data->{stage_name} .= ($attr->{data_type} eq 'cluster') ? '.map' : '.seq';
+        }
+        # build proper file name
+        my $suffix = "";
+        if (exists $data->{cluster_percent}) {
+            my $seqtype = (exists($data->{seq_format}) && ($data->{seq_format} eq 'bp')) ? 'rna' : 'aa';
+            $suffix = ".cluster.".$seqtype.$data->{cluster_percent};
+            if ($data->{data_type} eq "cluster") {
+                $suffix .= '.mapping';
+            } elsif ($seqtype eq 'rna') {
+                $suffix .= '.fna';
+            } elsif ($seqtype eq 'aa') {
+                $suffix .= '.faa';
+            }
+        }
+        elsif (($data->{data_type} =~ /^sequence|passed|removed$/) && exists($data->{file_format})) {
+            $suffix = ".".$data->{stage_name};
+            if ($data->{file_format} eq 'fastq') {
+                $suffix .= '.fastq';
+            } elsif (exists($data->{seq_format}) && ($data->{seq_format} eq 'bp')) {
+                $suffix .= '.fna';
+            } elsif (exists($data->{seq_format}) && ($data->{seq_format} eq 'aa')) {
+                $suffix .= '.faa';
+            }
+        } elsif ($data->{stage_name} eq 'filter.sims') {
+            $suffix = '.annotation.sims.filter.seq';
+        } elsif ($data->{data_type} eq 'lca') {
+            $suffix = '.annotation.lca.summary';
+        } elsif ($data->{data_type} eq 'coverage') {
+            $suffix = '.assembly.coverage';
+        } elsif ($data->{data_type} eq 'statistics') {
+            $suffix = '.statistics.json';
+        } else {
+            $suffix = ".".$data->{stage_name};
+        }
+        $data->{file_name} = $data->{id}.".".$data->{stage_id}.$suffix;
+        push @$stages, $data;
     }
     return $stages;
 }
 
+# add or delete an ACL based on username
 sub edit_shock_acl {
-    my ($self, $id, $auth, $email, $action, $acl) = @_;
+    my ($self, $id, $auth, $user, $action, $acl) = @_;
     
     my $response = undef;
-    my $url = $Conf::shock_url.'/node/'.$id.'/acl?'.$acl.'='.$email;
+    my $url = $Conf::shock_url.'/node/'.$id.'/acl/'.$acl.'?users='.$user;
     eval {
         my $tmp = undef;
         if ($action eq 'delete') {
@@ -590,20 +689,27 @@ sub edit_shock_acl {
     }
 }
 
+# create node with optional file and/or attributes
+# file is json struct by default
 sub set_shock_node {
-    my ($self, $name, $file, $attr, $auth) = @_;
+    my ($self, $name, $file, $attr, $auth, $not_json) = @_;
     
-    my $attr_str = $self->json->encode($attr);
-    my $file_str = $self->json->encode($file);
-    my $content  = [attributes => [undef, "$name.json", Content => $attr_str], upload => [undef, $name, Content => $file_str]];
     my $response = undef;
+    my $content = {};
+    if ($file) {
+        my $file_str = $not_json ? $file : $self->json->encode($file);
+        $content->{upload} = [undef, $name, Content => $file_str];
+    }
+    if ($attr) {
+        $content->{attributes} = [undef, "$name.json", Content => $self->json->encode($attr)];
+    }
     eval {
-        my $post = undef;
-        if ($auth) {
-            $post = $self->agent->post($Conf::shock_url.'/node', $content, Content_Type => 'form-data', Authorization => "OAuth $auth");
-        } else {
-            $post = $self->agent->post($Conf::shock_url.'/node', $content, Content_Type => 'form-data');
-        }
+        my @args = (
+            $auth ? ('Authorization', "OAuth $auth") : (),
+            'Content_Type', 'multipart/form-data',
+            $content ? ('Content', $content) : ()
+        );
+        my $post = $self->agent->post($Conf::shock_url.'/node', @args);
         $response = $self->json->decode( $post->content );
     };
     if ($@ || (! ref($response))) {
@@ -615,23 +721,21 @@ sub set_shock_node {
     }
 }
 
-sub update_shock_node {
-    my ($self, $id, $attr, $auth) = @_;
-    
-    my $attr_str = $self->json->pretty->encode($attr);
-    my $content  = [attributes => [undef, "n/a", Content => $attr_str]];
+# set node file_name
+sub update_shock_node_file_name {
+    my ($self, $id, $fname, $auth) = @_;
+
     my $response = undef;
+    my $content = {file_name => $fname};
     eval {
-        my $put = undef;
-        if ($auth) {
-            my $req = POST($Conf::shock_url.'/node/'.$id, Authorization => "OAuth $auth", Content_Type => 'form-data', Content => $content);
-            $req->method('PUT');
-            $put = $self->agent->request($req);
-        } else {
-            my $req = POST($Conf::shock_url.'/node/'.$id, Content_Type => 'form-data', Content => $content);
-            $req->method('PUT');
-            $put = $self->agent->request($req);
-        }
+        my @args = (
+            $auth ? ('Authorization', "OAuth $auth") : (),
+            'Content_Type', 'multipart/form-data',
+            $content ? ('Content', $content) : ()
+        );
+        my $req = POST($Conf::shock_url.'/node/'.$id, @args);
+        $req->method('PUT');
+        my $put = $self->agent->request($req);
         $response = $self->json->decode( $put->content );
     };
     if ($@ || (! ref($response))) {
@@ -643,149 +747,189 @@ sub update_shock_node {
     }
 }
 
-sub update_shock_tags {
-  my ($self, $params) = @_;
-  
-  unless ($params->{id}) {
-    return undef;
-  }
-  
-  my $id = $params->{id};
-  my $auth = $params->{auth};
-  
-  my $tags = "";
 
-  if ($params->{tags} && ref $params->{tags} eq 'ARRAY') {
-    $tags = join(",", @{$params->{tags}});
-  }
-
-  my $tag_str = $self->json->pretty->encode($tags);
-  my $content  = [tags => [undef, "n/a", Content => $tag_str]];
-
-  my $response = undef;
-  eval {
-    my $put = undef;
-    my $url = $Conf::shock_url."/node/$id";
-    if ($auth) {
-      my $req = POST($Conf::shock_url.'/node/'.$id, Authorization => "OAuth $auth", Content_Type => 'form-data', Content => $content);
-      $req->method('PUT');
-      $put = $self->agent->request($req);
+# edit node attributes
+sub update_shock_node {
+    my ($self, $id, $attr, $auth) = @_;
+    
+    my $response = undef;
+    my $content = {attributes => [undef, "n/a", Content => $self->json->encode($attr)]};
+    eval {
+        my @args = (
+            $auth ? ('Authorization', "OAuth $auth") : (),
+            'Content_Type', 'multipart/form-data',
+            $content ? ('Content', $content) : ()
+        );
+        my $req = POST($Conf::shock_url.'/node/'.$id, @args);
+        $req->method('PUT');
+        my $put = $self->agent->request($req);
+        $response = $self->json->decode( $put->content );
+    };
+    if ($@ || (! ref($response))) {
+        return undef;
+    } elsif (exists($response->{error}) && $response->{error}) {
+        $self->return_data( {"ERROR" => "Unable to PUT to Shock: ".$response->{error}[0]}, $response->{status} );
     } else {
-      my $req = POST($Conf::shock_url.'/node/'.$id, Content_Type => 'form-data', Content => $content);
-      $req->method('PUT');
-      $put = $self->agent->request($req);
+        return $response->{data};
     }
-    $response = $self->json->decode( $put->content );
-  };
-  if ($@ || (! ref($response))) {
-    return undef;
-  } elsif (exists($response->{error}) && $response->{error}) {
-    $self->return_data( {"ERROR" => "Unable to PUT to Shock: ".$response->{error}[0]}, $response->{status} );
-  } else {
-    return $response->{data};
-  }
 }
 
+# get node contents
 sub get_shock_node {
     my ($self, $id, $auth) = @_;
     
-    my $content = undef;
+    my $response = undef;
     eval {
-        my $get = undef;
-        if ($auth) {
-            $get = $self->agent->get($Conf::shock_url.'/node/'.$id, 'Authorization' => "OAuth $auth");
-        } else {
-            $get = $self->agent->get($Conf::shock_url.'/node/'.$id);
-        }
-        $content = $self->json->decode( $get->content );
+        my @args = $auth ? ('Authorization', "OAuth $auth") : ();
+        my $get = $self->agent->get($Conf::shock_url.'/node/'.$id, @args);
+        $response = $self->json->decode( $get->content );
     };
-    if ($@ || (! ref($content))) {
+    if ($@ || (! ref($response))) {
         return undef;
-    } elsif (exists($content->{error}) && $content->{error}) {
-        $self->return_data( {"ERROR" => "Unable to GET node $id from Shock: ".$content->{error}[0]}, $content->{status} );
+    } elsif (exists($response->{error}) && $response->{error}) {
+        $self->return_data( {"ERROR" => "Unable to GET node $id from Shock: ".$response->{error}[0]}, $response->{status} );
     } else {
-        return $content->{data};
+        return $response->{data};
     }
 }
 
-sub get_shock_file {
-    my ($self, $id, $file, $auth) = @_;
+# get the shock preauth url for a file
+sub get_shock_preauth {
+    my ($self, $id, $auth, $fn) = @_;
     
-    my $content = undef;
+    my $response = undef;
     eval {
-        my $get = undef;
-        if ($auth) {
-            $get = $self->agent->get($Conf::shock_url.'/node/'.$id.'?download', 'Authorization' => "OAuth $auth");
-        } else {
-            $get = $self->agent->get($Conf::shock_url.'/node/'.$id.'?download');
-        }
-        $content = $get->content;
+        my @args = $auth ? ('Authorization', "OAuth $auth") : ();
+        my $get = $self->agent->get($Conf::shock_url.'/node/'.$id.'?download_url'.($fn ? "&filename=".$fn : ""), @args);
+        $response = $self->json->decode( $get->content );
     };
-    if ($@ || (! $content)) {
+    if ($@ || (! ref($response))) {
         return undef;
-    } elsif (ref($content) && exists($content->{error}) && $content->{error}) {
-        $self->return_data( {"ERROR" => "Unable to GET file $id from Shock: ".$content->{error}[0]}, $content->{status} );
-    } elsif ($file) {
-        if (open(FILE, ">$file")) {
-            print FILE $content;
-            close(FILE);
-            return 1;
-        } else {
-            return undef;
-        }
+    } elsif (exists($response->{error}) && $response->{error}) {
+        $self->return_data( {"ERROR" => "Unable to GET node $id from Shock: ".$response->{error}[0]}, $response->{status} );
     } else {
-        return $content;
+        return $response->{data};
     }
 }
 
+# write file content to given filepath, else return file content as string
+sub get_shock_file {
+    my ($self, $id, $file, $auth, $index) = @_;
+    
+    my $response = undef;
+    my $fhdl = undef;
+    my @args = $auth ? ('Authorization', "OAuth $auth") : ();
+    
+    if ($file) {
+        open($fhdl, ">$file") || return undef;
+        push @args, (':read_size_hint', 8192, ':content_cb', sub{ my ($chunk) = @_; print $fhdl $chunk; });
+    }
+    eval {
+        my $url = $Conf::shock_url.'/node/'.$id.'?download'.($index ? '&'.$index : '');
+        $response = $self->agent->get($url, @args);
+    };
+    if ($@ || (! $response)) {
+        return undef;
+    } elsif ($file) {
+        close($fhdl);
+        return 1;
+    } else {
+        return $response->content;
+    }
+}
+
+# get list of nodes for query
 sub get_shock_query {
     my ($self, $params, $auth) = @_;
     
-    my $shock = undef;
+    my $response = undef;
     my $query = '?query&limit=0';
     if ($params && (scalar(keys %$params) > 0)) {
         map { $query .= '&'.$_.'='.$params->{$_} } keys %$params;
     }
     eval {
-        my $get = undef;
-        if ($auth) {
-            $get = $self->agent->get($Conf::shock_url.'/node'.$query, 'Authorization' => "OAuth $auth");
-        } else {
-            $get = $self->agent->get($Conf::shock_url.'/node'.$query);
-        }
-        $shock = $self->json->decode( $get->content );
+        my @args = $auth ? ('Authorization', "OAuth $auth") : ();
+        my $get = $self->agent->get($Conf::shock_url.'/node'.$query, @args);
+        $response = $self->json->decode( $get->content );
     };
-    if ($@ || (! ref($shock))) {
+    if ($@ || (! ref($response))) {
         return [];
-    } elsif (exists($shock->{error}) && $shock->{error}) {
-        $self->return_data( {"ERROR" => "Unable to query Shock: ".$shock->{error}[0]}, $shock->{status} );
+    } elsif (exists($response->{error}) && $response->{error}) {
+        $self->return_data( {"ERROR" => "Unable to query Shock: ".$response->{error}[0]}, $response->{status} );
     } else {
-        return $shock->{data};
+        return $response->{data};
     }
 }
 
-sub get_awe_query {
-    my ($self, $params, $recent) = @_;
+# submit job to awe
+sub post_awe_job {
+    my ($self, $workflow, $shock_auth, $awe_auth, $is_string) = @_;
+
+    my $content = undef;
+    if ($is_string) {
+        $content = { upload => [undef, "seqstats.awf", Content => $workflow] }
+    } else {
+        $content = [ upload => [$workflow] ];
+    }
+
+    my $response = undef;
+    eval {
+        my $post = $self->agent->post($Conf::awe_url.'/job',
+                                      'Datatoken', $shock_auth,
+                                      'Authorization', 'OAuth '.$awe_auth,
+                                      'Content-Type', 'multipart/form-data',
+                                      'Content', $content);
+        $response = $self->json->decode( $post->content );
+    };
+
+    if ($@ || (! ref($response))) {
+        return [];
+    } elsif (exists($response->{error}) && $response->{error}) {
+        $self->return_data( {"ERROR" => "Unable to submit to AWE: ".$response->{error}[0]}, $response->{status} );
+    } else {
+        return $response->{data};
+    }
+}
+
+# PUT command to perfrom action on a job
+sub awe_job_action {
+    my ($self, $id, $action, $auth) = @_;
     
-    my $awe = undef;
+    my $response = undef;
+    eval {
+        my @args = $auth ? ('Authorization', "OAuth $auth") : ();
+        my $req = POST($Conf::awe_url.'/job/'.$id.'?'.$action, @args);
+        $req->method('PUT');
+        my $put = $self->agent->request($req);
+        $response = $self->json->decode( $put->content );
+    };
+    if ($@ || (! ref($response))) {
+        $self->return_data( {"ERROR" => "Unable to PUT to AWE: ".$@}, 500 );
+    } else {
+        return $response;
+    }
+}
+
+# get list of jobs for query
+sub get_awe_query {
+    my ($self, $params, $auth) = @_;
+    
+    my $response = undef;
     my $query = '?query';
     if ($params && (scalar(keys %$params) > 0)) {
-        map { $query .= '&'.$_.'='.$params->{$_} } keys %$params;
-    }
-    if ($recent) {
-        $query .= '&recent='.$recent
+        while (my ($key, $value) = each %$params) {
+            map { $query .= '&'.$key.'='.uri_escape($_) } @$value;
+        }
     }
     eval {
-        my $get = undef;
-        $get = $self->agent->get($Conf::awe_url.'/job'.$query);
-        $awe = $self->json->decode( $get->content );
+        my @args = $auth ? ('Authorization', "OAuth $auth") : ();
+        my $get = $self->agent->get($Conf::awe_url.'/job'.$query, @args);
+        $response = $self->json->decode( $get->content );
     };
-    if ($@ || (! ref($awe))) {
-        return [];
-    } elsif (exists($awe->{error}) && $awe->{error}) {
-        $self->return_data( {"ERROR" => "Unable to query AWE: ".$awe->{error}[0]}, $awe->{status} );
+    if ($@ || (! ref($response))) {
+        $self->return_data( {"ERROR" => "Unable to query AWE: ".$@}, 500 );
     } else {
-        return $awe->{data};
+        return $response;
     }
 }
 

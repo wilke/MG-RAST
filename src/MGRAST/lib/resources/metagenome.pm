@@ -24,29 +24,6 @@ sub new {
     my %rights = $self->user ? map {$_, 1} grep {$_ ne '*'} @{$self->user->has_right_to(undef, 'view', 'metagenome')} : ();
     $self->{name} = "metagenome";
     $self->{mgdb} = undef;
-    # set defaults - these are hardcoded in pipeline
-    $self->{pipeline_defaults} = {
-        'file_type' => 'fna',
-        'filter_ln' => 'yes',
-        'filter_ln_mult' => '2.0',
-        'filter_ambig' => 'yes',
-        'max_ambig' => '5',
-        'dynamic_trim' => 'yes',
-        'min_qual' => '15',
-        'max_lqb' => '5',
-        'dereplicate' => 'yes',
-        'prefix_length' => '50',
-        'bowtie' => 'yes',
-        'screen_indexes' => 'h_sapiens_asm',
-        'fgs_type' => '454',
-        'rna_pid' => '97',
-        'aa_pid' => '90',
-        'm5nr_sims_version' => '1',
-        'm5rna_sims_version' => '1',
-        'm5nr_annotation_version' => '1',
-        'm5rna_annotation_version' => '1',
-        'assembled' => 'no'
-    };
     $self->{rights} = \%rights;
     $self->{cv} = { verbosity => {'minimal' => 1, 'mixs' => 1, 'metadata' => 1, 'stats' => 1, 'full' => 1},
                     direction => {'asc' => 1, 'desc' => 1},
@@ -66,7 +43,8 @@ sub new {
                           "status"   => [ 'cv', [['public', 'metagenome is public'],
 						                         ['private', 'metagenome is private'] ] ],
 						  "statistics" => [ 'hash', 'key value pairs describing statistics' ],
-                          "sequence_type" => [ 'string', 'sequencing type' ]
+                          "sequence_type" => [ 'string', 'sequencing type' ],
+                          "pipeline_parameters" => [ 'hash', 'key value pairs describing pipeline parameters' ]
     };
     $self->{query} = { "id"        => [ 'string', 'unique metagenome identifier' ],
                        "url"       => [ 'uri', 'resource location of this object instance' ],
@@ -81,7 +59,7 @@ sub new {
                        "created"   => [ 'date', 'time the metagenome was first created' ],
                        "status"    => [ 'cv', [['public', 'metagenome is public'],
 						                       ['private', 'metagenome is private']] ],
-					   "env_package_type" => [ 'string', 'enviromental package of sample, GSC term' ],
+					   "env_package_type" => [ 'string', 'environmental package of sample, GSC term' ],
 					   "project_id"       => [ 'string', 'id of project containing metagenome' ],
                        "project_name"     => [ 'string', 'name of project containing metagenome' ],
                        "PI_firstname"     => [ 'string', 'principal investigator\'s first name' ],
@@ -197,8 +175,10 @@ sub instance {
         $self->return_data( {"ERROR" => "id $id does not exist"}, 404 );
     }
     $job = $job->[0];
+    
+    # job is in pipeline, just view minimal info
     unless ($job->viewable) {
-        $self->return_data( {"ERROR" => "id $id is still processing and unavailable"}, 404 );
+        $verb = 'pipeline';
     }
 
     # check rights
@@ -210,7 +190,7 @@ sub instance {
     $self->return_cached();
     
     # prepare data
-    my $data = $self->prepare_data([$job]);
+    my $data = $self->prepare_data([$job], $verb);
     $data = $data->[0];
     $self->return_data($data, undef, 1); # cache this!
 }
@@ -359,7 +339,7 @@ sub query {
                 push @$jobs, $job->[0];
             }
         }
-        $obj->{data} = $self->prepare_data($jobs);
+        $obj->{data} = $self->prepare_data($jobs, $verb);
     }
     
     $self->return_data($obj);
@@ -374,9 +354,8 @@ sub solr_data {
 
 # reformat the data into the requested output format
 sub prepare_data {
-    my ($self, $data) = @_;
-
-    my $verb = $self->cgi->param('verbosity') || 'minimal';
+    my ($self, $data, $verb) = @_;
+    
     my $mgids = [];
     @$mgids = map { $_->{metagenome_id} } @$data;
     my $jobdata = {};
@@ -406,7 +385,7 @@ sub prepare_data {
         $obj->{url} = $url.'/metagenome/'.$obj->{id}.'?verbosity='.$verb;
         $obj->{name} = $job->{name};
         $obj->{job_id} = $job->{job_id};
-        $obj->{status} = $job->{public} ? 'public' : 'private';
+        $obj->{status} = ($verb eq 'pipeline') ? 'pipeline' : ($job->{public} ? 'public' : 'private');
         $obj->{created} = $job->{created_on};
         $obj->{version} = 1;
         $obj->{project} = undef;
@@ -426,15 +405,21 @@ sub prepare_data {
 	        my $lib = $job->library;
 	        $obj->{library} = ["mgl".$lib->{ID}, $url."/library/mgl".$lib->{ID}];
 	    };
-	    # add pipeline info
+	    # get job info
 	    my $jstats  = $job->stats();
 	    my $jdata   = $job->data();
-	    my $pparams = $self->{pipeline_defaults};
+	    if (exists($jdata->{deleted}) && $jdata->{deleted}) {
+	        # this is a deleted job !!
+	        $self->return_data( {"ERROR" => "Metagenome mgm".$job->{metagenome_id}." does not exist: ".$jdata->{deleted}}, 400 );
+	    }
+	    # add pipeline info
+	    my $pparams = $self->pipeline_defaults;
 	    $pparams->{assembled} = (exists($jdata->{assembled}) && $jdata->{assembled}) ? 'yes' : 'no';
+	    $pparams->{publish_priority} = (exists($jdata->{priority}) && $jdata->{priority}) ? $jdata->{priority} : 'never';
 	    # replace value defaults
 	    foreach my $tag (('max_ambig', 'min_qual', 'max_lqb', 'screen_indexes',
-	                        'm5nr_sims_version', 'm5rna_sims_version',
-	                        'm5nr_annotation_version', 'm5rna_annotation_version')) {
+	                      'm5nr_sims_version', 'm5rna_sims_version',
+	                      'm5nr_annotation_version', 'm5rna_annotation_version')) {
 	        if (exists($jdata->{$tag}) && defined($jdata->{$tag})) {
 	            $pparams->{$tag} = $jdata->{$tag};
 	        }
@@ -445,20 +430,18 @@ sub prepare_data {
 	            $pparams->{$tag} = 'no';
 	        }
         }
-	# preprocessing
-	if ($jdata->{file_type}) {
-	    $pparams->{file_type} = ($jdata->{file_type} =~ /^(fq|fastq)$/) ? 'fastq' : 'fna';
-	} elsif ($jdata->{suffix}) {
-	    $pparams->{file_type} = ($jdata->{suffix} =~ /^(fq|fastq)$/) ? 'fastq' : 'fna';
-	} else {
-	    $pparams->{file_type} = 'fna';
-	}
+	    # preprocessing
+	    if ($jdata->{file_type}) {
+	        $pparams->{file_type} = ($jdata->{file_type} =~ /^(fq|fastq)$/) ? 'fastq' : 'fna';
+	    } elsif ($jdata->{suffix}) {
+	        $pparams->{file_type} = ($jdata->{suffix} =~ /^(fq|fastq)$/) ? 'fastq' : 'fna';
+	    } else {
+	        $pparams->{file_type} = 'fna';
+	    }
         if ($pparams->{file_type} eq 'fna') {
-            if ($jdata->{max_ln} && $jstats->{average_length_raw} && $jstats->{standard_deviation_length_raw}) {
-		if ($jstats->{standard_deviation_length_raw} > 0) {
-		    my $multiplier = (1.0 * ($jdata->{max_ln} - $jstats->{average_length_raw})) / $jstats->{standard_deviation_length_raw};
-		    $pparams->{filter_ln_mult} = sprintf("%.2f", $multiplier);
-		}
+            if ($jdata->{max_ln} && $jstats->{average_length_raw} && $jstats->{standard_deviation_length_raw} && ($jstats->{standard_deviation_length_raw} > 0)) {
+		        my $multiplier = (1.0 * ($jdata->{max_ln} - $jstats->{average_length_raw})) / $jstats->{standard_deviation_length_raw};
+		        $pparams->{filter_ln_mult} = sprintf("%.2f", $multiplier);
             }
             delete @{$pparams}{'dynamic_trim', 'min_qual', 'max_lqb'};
         } elsif ($pparams->{file_type} eq 'fastq') {
@@ -483,144 +466,69 @@ sub prepare_data {
             $obj->{mixs_compliant} = $mddb->is_job_compliant($job);
         }
         if (($verb eq 'stats') || ($verb eq 'full')) {
-            $obj->{statistics} = $self->job_stats($job, $jstats);
+            my $params = {type => 'metagenome', data_type => 'statistics', id => 'mgm'.$job->{metagenome_id}};
+            my $stat_node = $self->get_shock_query($params, $self->mgrast_token);
+            if (scalar(@{$stat_node}) == 0) {
+                $obj->{statistics} = {};
+            } else {
+                $obj->{statistics} = $self->clean_stats($stat_node->[0]{id});
+            }
         }
         push @$objects, $obj;
     }
     return $objects;
 }
 
-sub job_stats {
-    my ($self, $job, $jstat) = @_;
+sub clean_stats {
+    my ($self, $stat_node_id) = @_;
     
-    my $jid = $job->job_id;
-    my $stats = {
-        length_histogram => {
-            "upload"  => $self->{mgdb}->get_histogram_nums($jid, 'len', 'raw'),
-            "post_qc" => $self->{mgdb}->get_histogram_nums($jid, 'len', 'qc')
-        },
-        gc_histogram => {
-            "upload"  => $self->{mgdb}->get_histogram_nums($jid, 'gc', 'raw'),
-            "post_qc" => $self->{mgdb}->get_histogram_nums($jid, 'gc', 'qc')
-        },
-        taxonomy => {
-            "species" => $self->{mgdb}->get_taxa_stats($jid, 'species'),
-            "genus"   => $self->{mgdb}->get_taxa_stats($jid, 'genus'),
-            "family"  => $self->{mgdb}->get_taxa_stats($jid, 'family'),
-            "order"   => $self->{mgdb}->get_taxa_stats($jid, 'order'),
-            "class"   => $self->{mgdb}->get_taxa_stats($jid, 'class'),
-            "phylum"  => $self->{mgdb}->get_taxa_stats($jid, 'phylum'),
-            "domain"  => $self->{mgdb}->get_taxa_stats($jid, 'domain')
-        },
-        ontology => {
-            "COG" => $self->{mgdb}->get_ontology_stats($jid, 'COG'),
-            "KO"  => $self->{mgdb}->get_ontology_stats($jid, 'KO'),
-            "NOG" => $self->{mgdb}->get_ontology_stats($jid, 'NOG'),
-            "Subsystems" => $self->{mgdb}->get_ontology_stats($jid, 'Subsystems')
-        },
-        source => $self->{mgdb}->get_source_stats($jid),
-        rarefaction => $self->{mgdb}->get_rarefaction_coords($jid),
-        sequence_stats => $jstat,
-        qc => { "kmer" => {"6_mer" => $self->get_kmer($jid,'6'), "15_mer" => $self->get_kmer($jid,'15')},
-                "drisee" => $self->get_drisee($jid, $jstat),
-                "bp_profile" => $self->get_nucleo($jid)
-        }
-    };
-}
-
-sub get_drisee {
-    my ($self, $jid, $stats) = @_;
-    
-    my $bp_set = ['A', 'T', 'C', 'G', 'N', 'InDel'];
-    my $drisee = $self->{mgdb}->get_qc_stats($jid, 'drisee');
-    my $ccols  = ['Position'];
-    map { push @$ccols, $_.' match consensus sequence' } @$bp_set;
-    map { push @$ccols, $_.' not match consensus sequence' } @$bp_set;
-    my $data = { summary  => { columns => [@$bp_set, 'Total'], data => undef },
-                 counts   => { columns => $ccols, data => undef },
-                 percents => { columns => ['Position', @$bp_set, 'Total'], data => undef }
-               };
-    unless ($drisee && (@$drisee > 2) && ($drisee->[1][0] eq '#')) {
-        return $data;
+    my $stats = $self->json->decode($self->get_shock_file($stat_node_id, undef, $self->mgrast_token));
+    # seq stats
+    foreach my $key (keys %{$stats->{sequence_stats}}) {
+        $stats->{sequence_stats}{$key} = $self->toFloat($stats->{sequence_stats}{$key});
     }
-    for (my $i=0; $i<6; $i++) {
-        $data->{summary}{data}[$i] = $drisee->[1][$i+1] * 1.0;
-    }
-    $data->{summary}{data}[6] = $stats->{drisee_score_raw} ? $stats->{drisee_score_raw} * 1.0 : undef;
-    my $raw = [];
-    my $per = [];
-    foreach my $row (@$drisee) {
-        next if ($row->[0] =~ /\#/);
-	    @$row = map { int($_) } @$row;
-	    push @$raw, $row;
-	    if ($row->[0] > 50) {
-	        my $x = shift @$row;
-	        my $sum = sum @$row;
-	        if ($sum == 0) {
-	            push @$per, [ $x, 0, 0, 0, 0, 0, 0, 0 ];
-	        } else {
-	            my @tmp = map { sprintf("%.2f", 100 * (($_ * 1.0) / $sum)) * 1.0 } @$row;
-	            push @$per, [ $x, @tmp[6..11], sprintf("%.2f", sum(@tmp[6..11])) * 1.0 ];
+    # source
+    foreach my $src (keys %{$stats->{source}}) {
+        foreach my $type (keys %{$stats->{source}{$src}}) {
+            if (! $stats->{source}{$src}{$type}) {
+                $stats->{source}{$src}{$type} = [];
+            } else {
+                $stats->{source}{$src}{$type} = [ map { int($_) } @{$stats->{source}{$src}{$type}} ];
             }
-	    }
-    }
-    $data->{counts}{data} = $raw;
-    $data->{percents}{data} = $per;
-    return $data;
-}
-
-sub get_nucleo {
-    my ($self, $jid) = @_;
-    
-    my $cols = ['Position', 'A', 'T', 'C', 'G', 'N', 'Total'];
-    my $nuc  = $self->{mgdb}->get_qc_stats($jid, 'consensus');
-    my $data = { counts   => { columns => $cols, data => undef },
-                 percents => { columns => [@$cols[0..5]], data => undef }
-               };
-    unless ($nuc && (@$nuc > 2)) {
-        return $data;
-    }
-    my $raw = [];
-    my $per = [];
-    foreach my $row (@$nuc) {
-        next if (($row->[0] eq '#') || (! $row->[6]));
-        @$row = map { int($_) } @$row;
-        push @$raw, [ $row->[0] + 1, $row->[1], $row->[4], $row->[2], $row->[3], $row->[5], $row->[6] ];
-        unless (($row->[0] > 100) && ($row->[6] < 1000)) {
-    	    my $sum = $row->[6];
-    	    if ($sum == 0) {
-	            push @$per, [ $row->[0] + 1, 0, 0, 0, 0, 0 ];
-	        } else {
-    	        my @tmp = map { floor(100 * 100 * (($_ * 1.0) / $sum)) / 100 } @$row;
-    	        push @$per, [ $row->[0] + 1, $tmp[1], $tmp[4], $tmp[2], $tmp[3], $tmp[5] ];
-	        }
         }
     }
-    $data->{counts}{data} = $raw;
-    $data->{percents}{data} = $per;
-    return $data;
-}
-
-sub get_kmer {
-    my ($self, $jid, $num) = @_;
+    # qc
+    foreach my $qc (keys %{$stats->{qc}}) {
+        foreach my $type (keys %{$stats->{qc}{$qc}}) {
+            if (! $stats->{qc}{$qc}{$type}{data}) {                
+                $stats->{qc}{$qc}{$type}{data} = [];
+            }
+        }
+    }
+    # tax / ontol
+    foreach my $ann (('taxonomy', 'ontology')) {
+        foreach my $type (keys %{$stats->{$ann}}) {
+            if (! $stats->{$ann}{$type}) {
+                $stats->{$ann}{$type} = [];
+            } else {
+                $stats->{$ann}{$type} = [ map { [$_->[0], int($_->[1])] } @{$stats->{$ann}{$type}} ];
+            }
+        }
+    }
+    # histograms
+    foreach my $hist (('gc_histogram', 'length_histogram')) {
+        foreach my $type (keys %{$stats->{$hist}}) {
+            if (! $stats->{$hist}{$type}) {
+                $stats->{$hist}{$type} = [];
+            } else {
+                $stats->{$hist}{$type} = [ map { [$self->toFloat($_->[0]), int($_->[1])] } @{$stats->{$hist}{$type}} ];
+            }
+        }
+    }
+    # rarefaction
+    $stats->{rarefaction} = [ map { [int($_->[0]), $self->toFloat($_->[1])] } @{$stats->{rarefaction}} ];
     
-    my $cols = [ 'count of identical kmers of size N',
-    			 'number of times count occures',
-    	         'product of column 1 and 2',
-    	         'reverse sum of column 2',
-    	         'reverse sum of column 3',
-    		     'ratio of column 5 to total sum column 3 (not reverse)'
-               ];
-    my $kmer = $self->{mgdb}->get_qc_stats($jid, 'kmer.'.$num);
-    my $data = { columns => $cols, data => undef };
-    unless ($kmer && (@$kmer > 1)) {
-        return $data;
-    }
-    foreach my $row (@$kmer) {
-        @$row = map { $_ * 1.0 } @$row;
-    }
-    $data->{data} = $kmer;
-    return $data;
+    return $stats;
 }
 
 1;

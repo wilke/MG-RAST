@@ -9,6 +9,7 @@ use Digest::MD5 qw(md5 md5_hex md5_base64);
 use JSON;
 use Encode;
 use Number::Format qw(format_bytes);
+use LWP::UserAgent;
 
 use Conf;
 use WebConfig;
@@ -453,13 +454,14 @@ sub output {
 		    <div class="controls">
 		      <label class="select">
 			<select id="screening" name="screening">
-                           <option value="h_sapiens_asm">H. sapiens, NCBI v36</option>
-                           <option value="m_musculus_ncbi37">M. musculus, NCBI v37</option>
+                           <option value="h_sapiens">H. sapiens, NCBI v36</option>
+                           <option value="m_musculus">M. musculus, NCBI v37</option>
+                           <option value="r_norvegicus">R. norvegicus, UCSC rn4</option>
                            <option value="b_taurus">B. taurus, UMD v3.0</option>
-                           <option value="d_melanogaster_fb5_22">D. melanogaster, Flybase, r5.22</option>
+                           <option value="d_melanogaster">D. melanogaster, Flybase, r5.22</option>
                            <option value="a_thaliana">A. thaliana, TAIR, TAIR9</option>
                            <option value="e_coli">E. coli, NCBI, st. 536</option>
-                           <option value="s_scrofa_ncbi10.2">Sus scrofa, NCBI v10.2</option>
+                           <option value="s_scrofa">Sus scrofa, NCBI v10.2</option>
 			   <option value="none">none</option>
                         </select>
 			<br>Remove any host specific species sequences (e.g. plant, human or mouse) using DNA level matching with bowtie <a href='http://genomebiology.com/2009/10/3/R25' target='blank'>Langmead et al., Genome Biol. 2009, Vol 10, issue 3</a>
@@ -572,6 +574,31 @@ sub submit_to_mgrast {
   my $project_obj = undef;
   my $mddb = MGRAST::Metadata->new();
   my ($is_valid, $data, $log);
+  
+  # test if Shock-AWE are running
+  my $info  = undef;
+  my $agent = LWP::UserAgent->new;
+  my $json  = JSON->new;
+  $json = $json->utf8();
+  $json->max_size(0);
+  $json->allow_nonref;
+  $agent->timeout(10);
+  eval {
+    my $get = $agent->get($Conf::shock_url);
+    $info = $json->decode($get->content);
+  };
+  if ($@ || ($info->{id} ne 'Shock')) {
+    $self->application->add_message('warning', "Unable to access MG-RAST data store. Please try again later.");
+    return undef;
+  }
+  eval {
+    my $get = $agent->get($Conf::awe_url);
+    $info = $json->decode($get->content);
+  };
+  if ($@ || ($info->{id} ne 'AWE')) {
+    $self->application->add_message('warning', "Unable to access MG-RAST pipeline. Please try again later.");
+    return undef;
+  }
 
   # get project name from metadata
   if ($mdata) {
@@ -599,13 +626,13 @@ sub submit_to_mgrast {
   # get project if exists from name or id
   if ($project_name) {
     my $projects = $jobdbm->Project->get_objects( { name => $project_name } );
-    if (scalar(@$projects) && $user->has_right(undef, 'view', 'project', $projects->[0]->id)) {
+    if (scalar(@$projects) && $user->has_right(undef, 'edit', 'project', $projects->[0]->id)) {
       $project_obj = $projects->[0];
     }
   }
   elsif ($project_id) {
     my $projects = $jobdbm->Project->get_objects( { id => $project_id } );
-    if (scalar(@$projects) && $user->has_right(undef, 'view', 'project', $projects->[0]->id)) {
+    if (scalar(@$projects) && $user->has_right(undef, 'edit', 'project', $projects->[0]->id)) {
       $project_obj = $projects->[0];
     }
   }
@@ -639,17 +666,18 @@ sub submit_to_mgrast {
       my ($filename_base, $filename_ending) = $seqfile =~ /^(.*)\.(fasta|fa|ffn|frn|fna|fastq|fq)$/;
       my $subdir = "";
       if ($filename_base =~ /\//) {
-	($subdir, $filename_base) = $filename_base =~ /^(.*\/)(.*)/;
+	      ($subdir, $filename_base) = $filename_base =~ /^(.*\/)(.*)/;
       }
-      if ($filename_ending ne 'fastq') {
-	if ($filename_ending eq 'fq') {
-	  $filename_ending = 'fastq';	  
-	}
-	else { $filename_ending = 'fna'; }
-	`mv '$udir/$seqfile' '$udir/$subdir$filename_base.$filename_ending'`;
-	`mv '$udir/$seqfile.error_log' '$udir/$subdir$filename_base.$filename_ending.error_log'`;
-	`mv '$udir/$seqfile.stats_info' '$udir/$subdir$filename_base.$filename_ending.stats_info'`;
-	$seqfile = "$subdir$filename_base.$filename_ending";
+      if (($filename_ending ne 'fastq') || ($filename_ending ne 'fna')) {
+	      if ($filename_ending eq 'fq') {
+	          $filename_ending = 'fastq';	  
+	      } else {
+	          $filename_ending = 'fna';
+	      }
+	      `mv '$udir/$seqfile' '$udir/$subdir$filename_base.$filename_ending'`;
+	      `mv '$udir/$seqfile.error_log' '$udir/$subdir$filename_base.$filename_ending.error_log'`;
+	      `mv '$udir/$seqfile.stats_info' '$udir/$subdir$filename_base.$filename_ending.stats_info'`;
+          $seqfile = "$subdir$filename_base.$filename_ending";
       }
       my $name = $filename_base;
       # die if using metadata and no filename-library match
@@ -714,7 +742,7 @@ sub submit_to_mgrast {
   my $err_msgs = [];
   # create metadata collections
   if ($mdata) {
-    ($successfully_created_jobs, $err_msgs) = $mddb->add_valid_metadata($user, $data, $jobs, $project_obj);
+    (undef, $successfully_created_jobs, $err_msgs) = $mddb->add_valid_metadata($user, $data, $jobs, $project_obj);
     # only print err_msgs and return if not all jobs were successfully submitted
     if(@$err_msgs != 0 && @{$successfully_created_jobs} != @{$jobs}) {
       my $msg = "WARNING: The user \"".$user->login."\" submitted jobs that failed. The following errors were generated:\n";      
@@ -760,31 +788,17 @@ sub submit_to_mgrast {
   }
 
   my $pid = fork();
-  
   # child
   if ($pid == 0) {
     close STDERR;
     close STDOUT;
     foreach my $job (@$successfully_created_jobs) {
-      my $create_job_script = $Conf::create_job;
-      my $seqfile = $job2seq->{$job->{job_id}};
-      my $jid = $job->{job_id};
-      my $is_fastq = ($job2type->{$job->{job_id}} eq 'fastq') ? " --fastq" : "";
-      my $options  = $job->{options} ? ' -o "'.$job->{options}.'"' : "";
-      my $result = `$create_job_script -j $jid -f "$udir/$seqfile"$options$is_fastq`;
-      
-      # check if the sequence file made it over to the jobdirectory, then delete it in the inbox
-      my $rawfile = $job->download_dir.$job->{job_id}.".";
-      if ($is_fastq) {
-	$rawfile .= "fastq";
-      } else {
-	$rawfile .= "fna";
-      }
-      if (-f $rawfile && (stat($rawfile))[7] == (stat("$udir/$seqfile"))[7]) {
-	`rm "$udir/$seqfile"`; 
-	`rm "$udir/$seqfile.error_log"`; 
-	`rm "$udir/$seqfile.stats_info"`; 
-      }
+        # new submission script, delete from inbox if successful
+        my $seqfile = $udir."/".$job2seq->{$job->{job_id}};
+        my $status  = system($Conf::submit_to_awe." --job_id ".$job->{job_id}." --input_file ".$seqfile." > $seqfile.submit_log 2> $seqfile.error_log");
+        if ($status == 0) {
+            system("rm $seqfile $seqfile.stats_info $seqfile.submit_log $seqfile.error_log");
+        }
     }
     exit;
   }

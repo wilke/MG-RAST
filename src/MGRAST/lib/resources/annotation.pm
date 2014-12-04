@@ -33,7 +33,7 @@ sub new {
                                 "col_01" => ['string', 'sequence id'],
                                 "col_02" => ['string', 'm5nr id (md5sum)'],
                                 "col_03" => ['string', 'dna sequence'],
-                                "col_04" => ['string', 'semicolon seperated list of annotations'] },
+                                "col_04" => ['string', 'semicolon separated list of annotations'] },
                             similarity => {
                                 "col_01" => ['string', 'query sequence id'],
                                 "col_02" => ['string', 'hit m5nr id (md5sum)'],
@@ -47,7 +47,7 @@ sub new {
                                 "col_10" => ['int', 'hit end'],
                                 "col_11" => ['float', 'e-value'],
                                 "col_12" => ['float', 'bit score'],
-                                "col_13" => ['string', 'semicolon seperated list of annotations'] }
+                                "col_13" => ['string', 'semicolon separated list of annotations'] }
                           };
     return $self;
 }
@@ -78,12 +78,12 @@ sub info {
 						},
 				        { 'name'        => "sequence",
 				          'request'     => $self->cgi->url."/".$self->name."/sequence/{ID}",
-				          'description' => "tab deliminted annotated sequence stream",
+				          'description' => "tab delimited annotated sequence stream",
 				          'example'     => [ $self->cgi->url."/".$self->name."/sequence/mgm4447943.3?evalue=10&type=organism&source=SwissProt",
-				                             'all annotated read sequences from mgm4447943.3 with hits in SwissProt organisms at evaule < e-10' ],
+				                             'all annotated read sequences from mgm4447943.3 with hits in SwissProt organisms at evalue < e-10' ],
 				          'method'      => "GET",
 				          'type'        => "stream",  
-				          'attributes'  => { "streaming text" => ['object', [$self->{attributes}{sequence}, "tab deliminted annotated sequence stream"]] },
+				          'attributes'  => { "streaming text" => ['object', [$self->{attributes}{sequence}, "tab delimited annotated sequence stream"]] },
 				          'parameters'  => { 'required' => { "id" => [ "string", "unique metagenome identifier" ] },
 				                             'options' => { 'evalue'   => ['int', 'negative exponent value for maximum e-value cutoff: default is '.$self->{cutoffs}{evalue}],
                                                             'identity' => ['int', 'percent value for minimum % identity cutoff: default is '.$self->{cutoffs}{identity}],
@@ -96,12 +96,12 @@ sub info {
 						},
 						{ 'name'        => "similarity",
 				          'request'     => $self->cgi->url."/".$self->name."/similarity/{ID}",
-				          'description' => "tab deliminted blast m8 with annotation",
+				          'description' => "tab delimited blast m8 with annotation",
 				          'example'     => [ $self->cgi->url."/".$self->name."/similarity/mgm4447943.3?identity=80&type=function&source=KO",
   				                             'all annotated read blat stats from mgm4447943.3 with hits in KO functions at % identity > 80' ],
 				          'method'      => "GET",
 				          'type'        => "stream",  
-				          'attributes'  => { "streaming text" => ['object', [$self->{attributes}{similarity}, "tab deliminted blast m8 with annotation"]] },
+				          'attributes'  => { "streaming text" => ['object', [$self->{attributes}{similarity}, "tab delimited blast m8 with annotation"]] },
 				          'parameters'  => { 'required' => { "id" => [ "string", "unique metagenome identifier" ] },
 				                             'options' => { 'evalue'   => ['int', 'negative exponent value for maximum e-value cutoff: default is '.$self->{cutoffs}{evalue}],
                                                             'identity' => ['int', 'percent value for minimum % identity cutoff: default is '.$self->{cutoffs}{identity}],
@@ -265,19 +265,27 @@ sub prepare_data {
         $query .= " ORDER BY seek";
     }
     
-    my $srcid = $mgdb->_src_id->{$source};
-    my @head  = map { $self->{attributes}{$format}{$_}[1] } sort keys %{$self->{attributes}{$format}};
-    my $count = 0;
+    # get shock node for file
+    my $params = {type => 'metagenome', data_type => 'similarity', stage_name => 'filter.sims', id => 'mgm'.$mgid};
+    my $sim_node = $self->get_shock_query($params, $self->mgrast_token);
+    unless ((@$sim_node > 0) && exists($sim_node->[0]{id})) {
+        $self->return_data({"ERROR" => "Unable to retrieve $format file"}, 500);
+    }
+    my $node_id = $sim_node->[0]{id};
     
-    open(FILE, "<" . $mgdb->_sim_file($data->{job_id})) || $self->return_data({"ERROR" => "resource database offline"}, 503);
+    # print html and line headers
+    my @head = map { $self->{attributes}{$format}{$_}[1] } sort keys %{$self->{attributes}{$format}};
     print $cgi->header(-type => 'text/plain', -status => 200, -Access_Control_Allow_Origin => '*');
     print join("\t", @head)."\n";
-
+    
+    # start query
     my $hs  = HTML::Strip->new();
     my $sth = $mgdb->_dbh->prepare($query);
     $sth->execute() or die "Couldn't execute statement: ".$sth->errstr;
     
-    # loop through indices and print data
+    # loop through indexes and print data
+    my $srcid = $mgdb->_src_id->{$source};
+    my $count = 0;
     while (my @row = $sth->fetchrow_array()) {
         my ($md5, $seek, $len, $mmd5) = @row;
         my $sql = "";
@@ -308,10 +316,8 @@ sub prepare_data {
             if (@$ann == 0) { next; }
         }
         
-        # pull data from indexed file
-        my $rec = '';
-        seek(FILE, $seek, 0);
-        read(FILE, $rec, $len);
+        # pull data from indexed shock file
+        my $rec = $self->get_shock_file($node_id, undef, $self->mgrast_token, 'seek='.$seek.'&length='.$len);
         chomp $rec;
         foreach my $line ( split(/\n/, $rec) ) {
             my @tabs = split(/\t/, $line);
@@ -341,7 +347,6 @@ sub prepare_data {
     $sth->finish;
     $mgdb->_dbh->commit;
     print "Download complete. $count rows retrieved\n";
-    close FILE;
     exit 0;
 }
 
