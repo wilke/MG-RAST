@@ -756,6 +756,24 @@ sub clean_value {
 
 =pod
 
+=item * B<get_unique_for_tag> (Scalar<tag>)
+
+Returns list of unique values for a specific tag from MetaDataEntry.
+
+=cut 
+
+sub get_unique_for_tag {
+  my ($self, $tag) = @_;
+  
+  $tag = lc( clean_value($tag) );
+  my $mddb = $self->{_handle};
+  my $tmp = $mddb->db_handle->selectcol_arrayref("SELECT DISTINCT value FROM MetaDataEntry WHERE tag=".$mddb->db_handle->quote($tag));
+  return ($tmp && @$tmp) ? $tmp : [];
+}
+
+
+=pod
+
 =item * B<get_all_for_tag> (Scalar<tag>, Boolean<no_ppo>)
 
 Returns all data for a specific tag from MetaDataEntry.
@@ -978,7 +996,7 @@ sub add_valid_metadata {
   my ($self, $user, $data, $jobs, $project, $map_by_id, $delete_old) = @_;
 
   unless ($user && ref($user)) {
-    return ([], ["invalid user object"]);
+    return (undef, [], ["invalid user object"]);
   }
 
   my $err_msg = [];
@@ -1005,7 +1023,7 @@ sub add_valid_metadata {
   }
   unless ( $user->has_right(undef, 'edit', 'project', $project->id) || $user->has_star_right('edit', 'project') ) {
     push @$err_msg, "user lacks permission to edit project ".$project->id;
-    return ([], $err_msg);
+    return ($project->id, [], $err_msg);
   }
   unless ($new_proj) {
     foreach my $md (@proj_md) {
@@ -1158,7 +1176,7 @@ sub add_valid_metadata {
       $samp_coll->delete;
     }
   }
-  return ($added, $err_msg);
+  return ($project->id, $added, $err_msg);
 }
 
 sub investigation_type_alias {

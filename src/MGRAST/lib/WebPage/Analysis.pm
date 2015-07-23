@@ -69,6 +69,7 @@ sub init {
   $self->application->register_action($self, 'workbench_blat_output', 'workbench_blat_output');
   $self->application->register_action($self, 'qiime_export_visual', 'qiime_export_visual');
   $self->application->register_action($self, 'phylogeny_visual', 'phylogeny_visual');
+  $self->application->register_action($self, 'single_visual', 'single_visual');
 
   my $mgdb = MGRAST::Analysis->new( $self->app->data_handle('MGRAST')->db_handle );
   unless ($mgdb) {
@@ -134,9 +135,8 @@ sub output {
 relationships between functions (COG, NOG, SEED, subsystems, KEGG)
 '>Hierarchical Classification</div>";
   $tools .= "<div class='inactive_tool' style='padding-left:20px' onclick='choose_tool(\"annotation\");' name='tool_entry' id='annotation_tool' title='Report abundances using protein databases that include all functional labels'>All Annotations</div>";
-  $tools .= "<div class='category_tool'>Other</div>";
-  $tools .= "<div class='inactive_tool' style='padding-left:20px' onclick='choose_tool(\"recruitment_plot\");' name='tool_entry' id='recruitment_plot_tool' title='Recruits sequences to proteins in a reference genome 
-'>Recruitment Plot</div>";
+  #$tools .= "<div class='category_tool'>Other</div>";
+  #$tools .= "<div class='inactive_tool' style='padding-left:20px' onclick='choose_tool(\"recruitment_plot\");' name='tool_entry' id='recruitment_plot_tool' title='Recruits sequences to proteins in a reference genome'>Recruitment Plot</div>";
 
   my $html = "<input type='hidden' id='metagenome' value='$metagenome'>".$application->component('ajax')->output."<table class='analysis'><tr><td class='tool'><div id='tool' class='tool'>".$tools."<div id='progress_div'></div></div></td><td class='select'><div id='select' class='select'>".$self->phylogeny_select."</div></td><td class='buff'></td></tr><tr><td colspan=3 class='display'><div id='display' class='display'>";
 
@@ -600,8 +600,8 @@ sub single_data {
   if ($mg_grp_sel eq 'groups') {
     my $joined_data = {};
     foreach my $row (@$result) {
-      my $id_string = join("|", @$row[1..8]);
       $row->[0] = $collections->{$row->[0]};
+      my $id_string = join("|", @$row[0..8]);
       if (exists($joined_data->{$id_string})) {
 	$row->[10] = sprintf("%.2f", (($joined_data->{$id_string}->[9] * $joined_data->{$id_string}->[10]) + ($row->[9] * $row->[10])) / ($joined_data->{$id_string}->[9] + $row->[9]));
 	$row->[11] = sprintf("%.2f", (($joined_data->{$id_string}->[9] * $joined_data->{$id_string}->[11]) + ($row->[9] * $row->[11])) / ($joined_data->{$id_string}->[9] + $row->[9]));
@@ -689,7 +689,7 @@ sub phylogenetic_data {
       while (my ($mgid, $jobid) = each %{$self->{mgdb}->_job_map}) {
 	    my $jobj  = $mgrast->Job->init( {job_id => $jobid} );
 	    my $alpha = $jobj->stats('alpha_diversity_shannon')->{'alpha_diversity_shannon'};
-	    my $curve = $self->{mgdb}->get_rarefaction_coords($jobid);
+	    my $curve = $self->{mgdb}->get_rarefaction_coords($jobj->metagenome_id);
 	    if ($alpha)  { $mgid_alpha->{$mgid} = $alpha; }
 	    if (@$curve) { $mgid_curve->{$mgid} = $curve; }
       }
@@ -715,8 +715,8 @@ sub phylogenetic_data {
   if ($mg_grp_sel eq 'groups') {
     my $joined_data = {};
     foreach my $row (@$result) {
-      my $id_string = join("|", @$row[1..9]);
       $row->[0] = $collections->{$row->[0]};
+      my $id_string = join("|", @$row[0..9]);
       if (exists($joined_data->{$id_string})) {
 	$row->[12] = sprintf("%.2f", (($joined_data->{$id_string}->[10] * $joined_data->{$id_string}->[12]) + ($row->[10] * $row->[12])) / ($joined_data->{$id_string}->[10] + $row->[10]));
 	$row->[13] = sprintf("%.2f", (($joined_data->{$id_string}->[10] * $joined_data->{$id_string}->[13]) + ($row->[10] * $row->[13])) / ($joined_data->{$id_string}->[10] + $row->[10]));
@@ -861,8 +861,8 @@ sub metabolic_data {
   if ($mg_grp_sel eq 'groups') {
     my $joined_data = {};
     foreach my $row (@$all) {
-      my $id_string = join("|", @$row[1..4]);
       $row->[0] = $collections->{$row->[0]};
+      my $id_string = join("|", @$row[0..4]);
       if (exists($joined_data->{$id_string})) {
 	$row->[8] = sprintf("%.2f", (($joined_data->{$id_string}->[6] * $joined_data->{$id_string}->[8]) + ($row->[6] * $row->[8])) / ($joined_data->{$id_string}->[6] + $row->[6]));
 	$row->[9] = sprintf("%.2f", (($joined_data->{$id_string}->[6] * $joined_data->{$id_string}->[9]) + ($row->[6] * $row->[9])) / ($joined_data->{$id_string}->[6] + $row->[6]));
@@ -966,8 +966,8 @@ sub annotation_data {
   if ($mg_grp_sel eq 'groups') {
     my $joined_data = {};
     foreach my $row (@$result) {
-      my $id_string = join("|", @$row[1..2]);
       $row->[0] = $collections->{$row->[0]};
+      my $id_string = join("|", @$row[0..2]);
       if (exists($joined_data->{$id_string})) {
 	$row->[5] = sprintf("%.2f", (($joined_data->{$id_string}->[3] * $joined_data->{$id_string}->[5]) + ($row->[3] * $row->[5])) / ($joined_data->{$id_string}->[3] + $row->[3]));
 	$row->[6] = sprintf("%.2f", (($joined_data->{$id_string}->[3] * $joined_data->{$id_string}->[6]) + ($row->[3] * $row->[6])) / ($joined_data->{$id_string}->[3] + $row->[3]));
@@ -1053,8 +1053,8 @@ sub lca_data {
   if ($mg_grp_sel eq 'groups') {
     my $joined_data = {};
     foreach my $row (@$result) {
-      my $id_string = join("|", @$row[1..8]);
       $row->[0] = $collections->{$row->[0]};
+      my $id_string = join("|", @$row[0..8]);
       if (exists($joined_data->{$id_string})) {
 	$row->[10] = sprintf("%.2f", (($joined_data->{$id_string}->[9] * $joined_data->{$id_string}->[10]) + ($row->[9] * $row->[10])) / ($joined_data->{$id_string}->[9] + $row->[9]));
 	$row->[11] = sprintf("%.2f", (($joined_data->{$id_string}->[9] * $joined_data->{$id_string}->[11]) + ($row->[9] * $row->[11])) / ($joined_data->{$id_string}->[9] + $row->[9]));
@@ -1674,16 +1674,17 @@ sub get_read_align {
   
   $self->{mgdb}->set_jobs([$mgid]);
   my $md5_map  = $self->{mgdb}->decode_annotation('md5', [$md5]);
+  my $md5sum   = $md5_map->{$md5};
   my $seq_data = $self->{mgdb}->md5s_to_read_sequences([$md5]); # [ { 'md5' => md5, 'id' => id, 'sequence' => sequence } ]
-  my @md5_seq  = split(/\n/, $self->{mgdb}->ach->md5s2sequences([ $md5_map->{$md5} ])); # fasta text
+  my @md5_seq  = split(/\n/, $self->{mgdb}->ach->md5s2sequences([$md5sum])); # fasta text
 
-  if ((@md5_seq == 2) && ($md5_seq[0] =~ /$md5/)) {
+  if ((@md5_seq == 2) && ($md5_seq[0] =~ /$md5sum/)) {
     my $md5_fasta = $Conf::temp."/".$md5."_".time.".faa";
     open(MD5F, ">$md5_fasta") || return $html;
     print MD5F join("\n", @md5_seq) . "\n";
     close MD5F;
     $html .= "<p>Hit alignment for ".scalar(@$seq_data)." read".((scalar(@$seq_data) > 1) ? "s" : "")." within metagenome ".$job->name()." ($mgid) against sequence ";
-    $html .= ($type ne 'rna') ? "<a target=_blank href='http://tools.metagenomics.anl.gov/m5nr/?page=SearchResults&search_type=md5&query=$md5'>$md5</a>" : $md5;
+    $html .= ($type ne 'rna') ? "<a target=_blank href='http://tools.metagenomics.anl.gov/m5nr/?page=SearchResults&search_type=md5&query=$md5sum'>$md5sum</a>" : $md5;
     $html .= "</p>";
     
     foreach my $s (@$seq_data) {
@@ -2344,21 +2345,21 @@ sub single_visual {
 	  push(@$vals, $exp_hash->{$key}->[$ii] || 0);
 	}
 	my $row = $spec_hash->{$key};
-	foreach my $r (@$row) {
-	  if ($r =~ /derived/) {
-	    (undef, $r) = $r =~ /^(unclassified \(derived from )(.+)(\))$/;
-	  }
-	}
+	#foreach my $r (@$row) {
+	#  if ($r =~ /derived/) {
+	#    (undef, $r) = $r =~ /^(unclassified \(derived from )(.+)(\))$/;
+	#  }
+	#}
 	push(@$expanded_data, [ @$row, $vals ] );
       }    
     } else {
       foreach my $row (@$data) {
 	next if ($tree_domain_filter && $tree_domain_filter ne $row->[1]);
-	foreach my $r (@$row) {
-	  if ($r =~ /derived/) {
-	    (undef, $r) = $r =~ /^(unclassified \(derived from )(.+)(\))$/;
-	  }
-	}
+	#foreach my $r (@$row) {
+	#  if ($r =~ /derived/) {
+	#    (undef, $r) = $r =~ /^(unclassified \(derived from )(.+)(\))$/;
+	#  }
+	#}
 	push(@$expanded_data, [ @$row[1..9] ] );
       }
     }
@@ -3166,21 +3167,21 @@ sub phylogeny_visual {
 	  push(@$vals, $exp_hash->{$key}->[$ii] || 0);
 	}
 	my $row = $spec_hash->{$key};
-	foreach my $r (@$row) {
-	  if ($r =~ /derived/) {
-	    (undef, $r) = $r =~ /^(unclassified \(derived from )(.+)(\))$/;
-	  }
-	}
+	#foreach my $r (@$row) {
+	#  if ($r =~ /derived/) {
+	#    (undef, $r) = $r =~ /^(unclassified \(derived from )(.+)(\))$/;
+	#  }
+	#}
 	push(@$expanded_data, [ @$row, $vals ] );
       }    
     } else {
       foreach my $row (@$data) {
 	next if ($tree_domain_filter && $tree_domain_filter ne $row->[2]);
-	foreach my $r (@$row) {
-	  if ($r =~ /derived/) {
-	    (undef, $r) = $r =~ /^(unclassified \(derived from )(.+)(\))$/;
-	  }
-	}
+	#foreach my $r (@$row) {
+	#  if ($r =~ /derived/) {
+	#    (undef, $r) = $r =~ /^(unclassified \(derived from )(.+)(\))$/;
+	#  }
+	#}
 	push(@$expanded_data, [ @$row[2..10] ] );
       }
     }
@@ -5229,36 +5230,36 @@ sub lca_visual {
       my $mg2num = {};
 
       for (my $hh=0; $hh<scalar(@comp_mgs); $hh++) {
-	$mg2num->{$comp_mgs[$hh]} = $hh;
+	    $mg2num->{$comp_mgs[$hh]} = $hh;
       }
       foreach my $row (@$data) {
-	$spec_hash->{$row->[8]} = [ @$row[1..8] ];
-	unless (exists($exp_hash->{$row->[8]})) {
-	  $exp_hash->{$row->[8]} = [];
-	}
-	$exp_hash->{$row->[8]}->[$mg2num->{$row->[0]}] = $row->[9];
+	    $spec_hash->{$row->[8]} = [ @$row[1..8] ];
+	    unless (exists($exp_hash->{$row->[8]})) {
+	      $exp_hash->{$row->[8]} = [];
+	    }
+	    $exp_hash->{$row->[8]}->[$mg2num->{$row->[0]}] = $row->[9];
       }
       foreach my $key (sort(keys(%$exp_hash))) {
-	my $vals = [];
-	for (my $ii=0; $ii<scalar(@comp_mgs); $ii++) {
-	  push(@$vals, $exp_hash->{$key}->[$ii] || 0);
-	}
-	my $row = $spec_hash->{$key};
-	foreach my $r (@$row) {
-	  if ($r =~ /derived/) {
-	    (undef, $r) = $r =~ /^(unclassified \(derived from )(.+)(\))$/;
-	  }
-	}
-	push(@$expanded_data, [ @$row, $vals ] );
+	    my $vals = [];
+	    for (my $ii=0; $ii<scalar(@comp_mgs); $ii++) {
+	      push(@$vals, $exp_hash->{$key}->[$ii] || 0);
+	    }
+	    my $row = $spec_hash->{$key};
+	    #foreach my $r (@$row) {
+    	#  if ($r =~ /derived/) {
+	    #    (undef, $r) = $r =~ /^(unclassified \(derived from )(.+)(\))$/;
+	    #  }
+	    #}
+	    push(@$expanded_data, [ @$row, $vals ] );
       }
     } else {
       foreach my $row (@$data) {
-	foreach my $r (@$row) {
-	  if ($r =~ /derived/) {
-	    (undef, $r) = $r =~ /^(unclassified \(derived from )(.+)(\))$/;
-	  }
-	}
-	push(@$expanded_data, [ @$row[1..9] ] );
+	    #foreach my $r (@$row) {
+	    #  if ($r =~ /derived/) {
+	    #    (undef, $r) = $r =~ /^(unclassified \(derived from )(.+)(\))$/;
+	    #  }
+	    #}
+	    push(@$expanded_data, [ @$row[1..9] ] );
       }
     }
     @$expanded_data = sort { $b->[8] <=> $a->[8] } @$expanded_data;
@@ -6511,7 +6512,7 @@ sub group_select {
   my ($self) = @_;
   
   my $user = $self->application->session->user;
-  my $memd = new Cache::Memcached {'servers' => [ $Conf::web_memcache || "kursk-2.mcs.anl.gov:11211" ], 'debug' => 0, 'compress_threshold' => 10_000, };
+  my $memd = new Cache::Memcached {'servers' => $Conf::web_memcache, 'debug' => 0, 'compress_threshold' => 10_000, };
   my $cache_key = "analysis_groups_".($user ? $user->_id : "anonymous");
   my $cdata = $memd->get($cache_key);
 
@@ -6581,7 +6582,7 @@ sub selectable_metagenomes {
   my ($self, $no_groups) = @_;
 
   my $user = $self->application->session->user;
-  my $memd = new Cache::Memcached {'servers' => [ $Conf::web_memcache || "kursk-2.mcs.anl.gov:11211" ], 'debug' => 0, 'compress_threshold' => 10_000, };
+  my $memd = new Cache::Memcached {'servers' => $Conf::web_memcache, 'debug' => 0, 'compress_threshold' => 10_000, };
   my $cache_key = "analysis_metagenomes_".($no_groups ? "nogroups" : "hasgroups")."_".($user ? $user->_id : "anonymous");
   my $cdata = $memd->get($cache_key);
   
@@ -6601,8 +6602,8 @@ sub selectable_metagenomes {
       push @{$collections->{$name}}, [ $pj->{metagenome_id}, $pj->{name} ];
     }
     foreach my $coll ( sort keys %$collections ) {
-      if ( @{$collections->{$coll}} == 0 ) { next; }
-      push(@$colls, { label => $coll." [".scalar(@{$collections->{$coll}})."]", value => join('||', map { $_->[0]."##".$_->[1] } @{$collections->{$coll}}) });
+      if ( (! $coll) || (! $collections->{$coll}) || (@{$collections->{$coll}} == 0) ) { next; }
+      push(@$colls, { label => $coll." [".scalar(@{$collections->{$coll}})."]", value => join('||', map { ($_->[0] || "")."##".($_->[1] || "") } @{$collections->{$coll}}) });
     }
   }    
   

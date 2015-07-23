@@ -22,31 +22,68 @@ sub authenticate {
       $key =~ s/^mggo4711//;
 
       use MIME::Base64;
+      use LWP::UserAgent;
+      use Conf;
       my ($u,$p) = split(/\:/, decode_base64($key));
       my $us = $master->User->init( { login => $u } );
       if (ref $us and crypt($p, $us->password) eq $us->password) {
         my $pref = $master->Preferences->get_objects( { name => 'WebServiceKeyTdate', user => $us } );
-        if (scalar(@$pref)) { 
+        if (scalar(@$pref)) {
           if ($pref->[0]->value < time) {
               $pref->[0]->value(time + 1209600);
           }
+	  my $skeytimeout = $pref->[0]->value();
           $pref = $master->Preferences->get_objects( { name => 'WebServicesKey', user => $us } );
-	  my $cgi = new CGI;
-	  my $verbose = "";
-	  if ($cgi->param('verbosity') && $cgi->param('verbosity') eq 'verbose') {
-	    $verbose = ', "login": "'.$us->{login}.'", "firstname": "'.$us->{firstname}.'", "lastname": "'.$us->{lastname}.'", "email": "'.$us->{email}.'"';
-	  }
+          my $cgi = new CGI;
+          my $verbose = "";
+          if ($cgi->param('verbosity') && $cgi->param('verbosity') eq 'verbose') {
+            $verbose = ', "login":"'.$us->{login}.'", "firstname":"'.$us->{firstname}.'", "lastname":"'.$us->{lastname}.'", "email":"'.$us->{email}.'", "id":"mgu'.$us->{_id}.'"';
+            # SHOCK preferences
+            my $prefs = $master->Preferences->get_objects({ user => $us, name => "shock_pref_node" });
+            if (scalar(@$prefs)) {
+              my $nodeid = $prefs->[0]->{value};
+              my $response = undef;
+              my $json = new JSON;
+              $json = $json->utf8();
+              $json->max_size(0);
+              $json->allow_nonref;
+              my $agent = LWP::UserAgent->new;
+              eval {
+                my @args = ('Authorization', "mgrast ".$pref->[0]->{value});
+                my $url = $Conf::shock_url.'/node/'.$nodeid;
+                my $get = $agent->get($url, @args);
+                $response = $json->decode( $get->content );
+              };
+              if ($@ || (! ref($response))) {
+                print $cgi->header(-type => 'application/json',
+                                   -status => 500,
+                                   -charset => 'UTF-8',
+                                   -Access_Control_Allow_Origin => '*' );
+                print $json->encode({"ERROR" => "Unable to GET node $nodeid from Shock: ".$response->{error}[0]}, $response->{status} );
+                exit;
+              } elsif (exists($response->{error}) && $response->{error}) {
+                print $cgi->header(-type => 'application/json',
+                                   -status => 500,
+                                   -charset => 'UTF-8',
+                                   -Access_Control_Allow_Origin => '*' );
+                print $json->encode({"ERROR" => "Unable to GET node $nodeid from Shock: ".$response->{error}[0]}, $response->{status} );
+                exit;
+              } else {
+                $verbose.=', "preferences": '.$json->encode($response->{data}->{attributes}->{pref});
+              }
+            }
+          }
           print $cgi->header(-type => 'application/json',
                              -status => 200,
-			     -charset => 'UTF-8',
+                             -charset => 'UTF-8',
                              -Access_Control_Allow_Origin => '*' );
-          print '{ "token": "'.$pref->[0]->value.'"'.$verbose.' }';
+          print '{ "token": "'.$pref->[0]->value.'", "expiration": "'.$skeytimeout.'"'.$verbose.' }';
           exit;
         } else {
-	  return (undef, "api access not enabled for this user");
-	}
+          return (undef, "api access not enabled for this user");
+        }
       } else {
-	return (undef, "invalid MG-RAST credentials");
+        return (undef, "invalid MG-RAST credentials");
       }
   }
 
@@ -64,11 +101,18 @@ sub authenticate {
       $ustruct = globus_token($key);
       if ($ustruct) {
 	if ($ustruct->{access_token}) {
+	  my $info = { token => $ustruct->{access_token} };
+	  if ($cgi->param('verbosity') && $cgi->param('verbosity') eq 'verbose') {
+	    my $verb = globus_info($ustruct->{access_token});
+	    foreach my $key (keys(%$verb)) {
+	      $info->{$key} = $verb->{$key};
+	    }
+	  }
 	  print $cgi->header(-type => 'application/json',
 			     -status => 200,
 			     -charset => 'UTF-8',
 			     -Access_Control_Allow_Origin => '*' );
-	  print '{ "token": "'.$ustruct->{access_token}.'" }';
+	  print $json->encode($info);
 	  exit;
 	} else {
 	  return (undef, "invalid globus online credentials");
@@ -79,7 +123,8 @@ sub authenticate {
     }
 
     # validate the token
-    my $validation_url = 'https://nexus.api.globusonline.org/goauth/keys/';    
+    my $validation_url = 'https://nexus.api.globusonline.org/goauth/keys/';
+    my $userdata_url = 'https://nexus.api.globusonline.org/users/';
 
     # token syntax check
     my ($user, $sig) = $key =~ /^un=([^\|]+)\|.+SigningSubject=([^\|]+)/;
@@ -134,13 +179,44 @@ sub authenticate {
 	  # check if a connection exists
 	  my $pref = $master->Preferences->get_objects( { name => 'kbase_user', value => $user } );
 	  if (! scalar(@$pref)) {
-	    return (undef, "valid kbase user");
+
+	    # there is no connection, create a fake user and hook them up
+	    $result = `curl -s -H "Authorization: Globus-Goauthtoken $key" -X GET "$userdata_url$user"`;
+	    my $globus_udata;
+	    eval {
+	      $globus_udata = $json->decode($result);
+	    };
+	    if ($@) {
+	      return (undef, "could not reach globus online auth server");
+	    }
+	    my $existing = $master->User->get_objects({email => $globus_udata->{email}});
+	    if (scalar(@$existing)) {
+	      my $found_user = $existing->[0];
+	      $master->Preferences->create( { name => 'kbase_user', user => $found_user, value => $user } );
+	      return ($found_user);
+	    } else {
+	      my $firstname = "unknown";
+	      my $lastname = "";
+	      if ($globus_udata->{fullname} =~ /\s/) {
+		($firstname, $lastname) = $globus_udata->{fullname} =~ /^(.+)\s(.+)$/;
+	      } else {
+		$lastname = $globus_udata->{username};
+	      }
+	      my $kbauto_user = $master->User->create({ firstname => $firstname, lastname => $lastname, email => $globus_udata->{email}, login => "KBaseAutoGeneratedUser:".$globus_udata->{username}, comment => "auto-generated KBase user" });
+	      $master->Preferences->create( { name => 'kbase_user', user => $kbauto_user, value => $user } );
+	      return ($kbauto_user);
+	    }
 	  }
 	}
       } else {
 	return (undef, "globus authentication did not validate");
       }
     }
+  }
+
+  # check for MG-RAST default auth header
+  if ($auth_value =~ /^mgrast /) {
+    $auth_value =~ s/^mgrast //;
   }
     
   # check for the preference setting for the defined authentication source and value

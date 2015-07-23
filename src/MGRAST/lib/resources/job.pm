@@ -17,6 +17,16 @@ sub new {
     
     # Add name / attributes
     $self->{name} = "job";
+    $self->{job_actions} = {
+        reserve  => 1,
+        create   => 1,
+        submit   => 1,
+        resubmit => 1,
+        share    => 1,
+        public   => 1,
+        delete   => 1,
+        addproject => 1
+    };
     $self->{attributes} = {
         reserve => { "timestamp"     => [ 'date', 'time the metagenome was first reserved' ],
                      "metagenome_id" => [ "string", "unique MG-RAST metagenome identifier" ],
@@ -25,23 +35,32 @@ sub new {
         create => { "timestamp" => [ 'date', 'time the metagenome was first reserved' ],
                     "options"   => [ "string", "job pipeline option string" ],
                     "job_id"    => [ "int", "unique MG-RAST job identifier" ] },
+        submit => { "awe_id" => [ "string", "ID of AWE job" ],
+                    "log"    => [ "string", "log of sumbission" ] },
+        delete => { "deleted" => [ 'boolean', 'the metagenome is deleted' ],
+                    "error"   => [ "string", "error message if unable to delete" ] },
         addproject => { "project_id"   => [ "string", "unique MG-RAST project identifier" ],
                         "project_name" => [ "string", "MG-RAST project name" ],
                         "status"       => [ 'string', 'status of action' ] },
-        kb2mg => { "found" => [ 'int', 'number of inputted ids that have an alias' ],
+        kb2mg => { "found" => [ 'int', 'number of input ids that have an alias' ],
                    "data"  => [ 'hash', 'key value pairs of KBase id to MG-RAST id' ] },
-        mg2kb => { "found" => [ 'int', 'number of inputted ids that have an alias' ],
+        mg2kb => { "found" => [ 'int', 'number of input ids that have an alias' ],
                    "data"  => [ 'hash', 'key value pairs of MG-RAST id to KBase id' ] }
     };
-    $self->{input_stats}  = [ map {substr($_, 0, -4)} grep {$_ =~ /_raw$/} $self->seq_stats ];
     $self->{create_param} = {
         'metagenome_id' => ["string", "unique MG-RAST metagenome identifier"],
-        'sequence_type' => ["cv", [["WGS", "whole genome shotgun sequenceing"],
-                                   ["Amplicon", "amplicon sequenceing"],
-                                   ["MT", "metatranscriptome sequenceing"]] ]
+        'input_id'      => ["string", "shock node id of input sequence file (optional)"],
+        'submission'    => ["string", "unique submission id (optional)"]
     };
-    map { $self->{create_param}{$_} = ['float', 'sequence statistic'] } @{$self->{input_stats}};
+    my @input_stats = map { substr($_, 0, -4) } grep { $_ =~ /_raw$/ } @{$self->seq_stats};
+    map { $self->{create_param}{$_} = ['float', 'sequence statistic'] } grep { $_ !~ /drisee/ } @input_stats;
     map { $self->{create_param}{$_} = ['string', 'pipeline option'] } @{$self->pipeline_opts};
+    $self->{create_param}{sequence_type} = [
+        "cv", [["WGS", "whole genome shotgun sequenceing"],
+               ["Amplicon", "amplicon rRNA sequenceing"],
+               ["AmpliconGene", "amplicon gene sequenceing"],
+               ["MT", "metatranscriptome sequenceing"]]
+    ];
     return $self;
 }
 
@@ -73,21 +92,79 @@ sub info {
 				          'attributes'  => $self->{attributes}{reserve},
 				          'parameters'  => { 'options'  => {},
 							                 'required' => {},
-							                 'body'     => { "kbase_id" => ['boolean', "if true create KBase ID, default is false."],
-							                                 "name" => ["string", "name of metagenome"],
-							                                 "file" => ["string", "name of sequence file"],
-							                                 "file_size" => ["string", "byte size of sequence file"],
-          							                         "file_checksum" => ["string", "md5 checksum of sequence file"] } }
+							                 'body'     => {
+							                     "kbase_id"  => ['boolean', "if true create KBase ID, default is false."],
+							                     "name"      => ["string", "name of metagenome (required)"],
+							                     "input_id"  => ["string", "shock node id of input sequence file (optional)"],
+							                     "file"      => ["string", "name of sequence file"],
+							                     "file_size" => ["string", "byte size of sequence file"],
+          							             "file_checksum" => ["string", "md5 checksum of sequence file"] } }
 						},
 						{ 'name'        => "create",
 				          'request'     => $self->cgi->url."/".$self->name."/create",
-				          'description' => "Create an MG-RAST job with inputted reserved ID, sequence stats, and pipeline options.",
+				          'description' => "Create an MG-RAST job with input reserved ID, sequence stats, and pipeline options.",
 				          'method'      => "POST",
 				          'type'        => "synchronous",
 				          'attributes'  => $self->{attributes}{create},
 				          'parameters'  => { 'options'  => {},
 							                 'required' => {},
 							                 'body'     => $self->{create_param} }
+						},
+						{ 'name'        => "submit",
+				          'request'     => $self->cgi->url."/".$self->name."/submit",
+				          'description' => "Submit a MG-RAST job to AWE pipeline.",
+				          'method'      => "POST",
+				          'type'        => "synchronous",
+				          'attributes'  => $self->{attributes}{submit},
+				          'parameters'  => { 'options'  => {},
+							                 'required' => {},
+							                 'body'     => { "metagenome_id" => ["string", "unique MG-RAST metagenome identifier"],
+							                                 "input_id" => ["string", "shock node id of input sequence file"] } }
+						},
+						{ 'name'        => "resubmit",
+				          'request'     => $self->cgi->url."/".$self->name."/resubmit",
+				          'description' => "Re-submit an existing MG-RAST job to AWE pipeline.",
+				          'method'      => "PUT",
+				          'type'        => "synchronous",
+				          'attributes'  => $self->{attributes}{submit},
+				          'parameters'  => { 'options'  => {},
+							                 'required' => {},
+							                 'body'     => { "metagenome_id" => ["string", "unique MG-RAST metagenome identifier"],
+							                                 "awe_id" => ["string", "awe job id of original job"] } }
+						},
+						{ 'name'        => "share",
+				          'request'     => $self->cgi->url."/".$self->name."/share",
+				          'description' => "Share metagenome with another user.",
+				          'method'      => "POST",
+				          'type'        => "synchronous",
+				          'attributes'  => { "shared"  => ['list', ['string', 'user metagenome shared with']] },
+				          'parameters'  => { 'options'  => {},
+							                 'required' => {},
+							                 'body'     => { "metagenome_id" => ["string", "unique MG-RAST metagenome identifier"],
+							                                 "user_id"       => ["string", "unique user identifier to share with"],
+							                                 "user_email"    => ["string", "user email to share with"],
+							                                 "edit"          => ["boolean", "if true edit rights shared, else (default) view rights only"] } }
+						},
+						{ 'name'        => "public",
+				          'request'     => $self->cgi->url."/".$self->name."/public",
+				          'description' => "Change status of metagenome to public.",
+				          'method'      => "POST",
+				          'type'        => "synchronous",
+				          'attributes'  => { "public"  => ['boolean', 'the metagenome is public'] },
+				          'parameters'  => { 'options'  => {},
+							                 'required' => {},
+							                 'body'     => { "metagenome_id" => ["string", "unique MG-RAST metagenome identifier"] } }
+						},
+						{ 'name'        => "delete",
+				          'request'     => $self->cgi->url."/".$self->name."/delete",
+				          'description' => "Delete metagenome.",
+				          'method'      => "POST",
+				          'type'        => "synchronous",
+				          'attributes'  => $self->{attributes}{delete},
+				          'parameters'  => { 'options'  => {},
+							                 'required' => {},
+							                 'body'     => { "metagenome_id" => ["string", "unique MG-RAST metagenome identifier"],
+     							                             "reason" => ["string", "reason for deleting metagenome"] } }
 						},
 						{ 'name'        => "addproject",
 				          'request'     => $self->cgi->url."/".$self->name."/addproject",
@@ -97,8 +174,8 @@ sub info {
 				          'attributes'  => $self->{attributes}{addproject},
 				          'parameters'  => { 'options'  => {},
 							                 'required' => {},
-							                 'body'     => { "metagenome_id" => [ "string", "unique MG-RAST metagenome identifier" ],
-							                                 "project_id" => [ "string", "unique MG-RAST project identifier" ] } }
+							                 'body'     => { "metagenome_id" => ["string", "unique MG-RAST metagenome identifier"],
+							                                 "project_id" => ["string", "unique MG-RAST project identifier"] } }
 						},
 						{ 'name'        => "kb2mg",
 				          'request'     => $self->cgi->url."/".$self->name."/kb2mg",
@@ -133,7 +210,7 @@ sub request {
     # determine sub-module to use
     if (scalar(@{$self->rest}) == 0) {
         $self->info();
-    } elsif (($self->rest->[0] eq 'reserve') || ($self->rest->[0] eq 'create') || ($self->rest->[0] eq 'addproject')) {
+    } elsif (exists $self->{job_actions}{ $self->rest->[0] }) {
         $self->job_action($self->rest->[0]);
     } elsif (($self->rest->[0] eq 'kb2mg') || ($self->rest->[0] eq 'mg2kb')) {
         $self->id_lookup($self->rest->[0]);
@@ -153,7 +230,21 @@ sub job_action {
     my $data = {};
     my $post = $self->get_post_data();
     
+    # job does not exist yet
     if ($action eq 'reserve') {
+        # get from shock node if given
+        if (exists $post->{input_id}) {
+            my $nodeid = $post->{input_id};
+            eval {
+                my $node = $self->get_shock_node($nodeid, $self->token, $self->user_auth);
+                $post->{file} = $node->{file}{name};
+                $post->{file_size} = $node->{file}{size};
+                $post->{file_checksum} = $node->{file}{checksum}{md5};
+            };
+            if ($@ || (! $post)) {
+                $self->return_data( {"ERROR" => "unable to obtain sequence file statistics from shock node ".$nodeid}, 500 );
+            }
+        }
         my @params = ();
         foreach my $p ('name', 'file', 'file_size', 'file_checksum') {
             if (exists $post->{$p}) {
@@ -172,7 +263,9 @@ sub job_action {
                   job_id        => $job->{job_id},
                   kbase_id      => (exists($post->{kbase_id}) && $post->{kbase_id}) ? $self->reserve_kbase_id($mgid): undef
         };
-    } elsif (($action eq 'create') || ($action eq 'addproject')) {
+    }
+    # we have a job in DB, do something
+    else {
         # check id format
         my (undef, $id) = $post->{metagenome_id} =~ /^(mgm)?(\d+\.\d+)$/;
         if (! $id) {
@@ -190,18 +283,197 @@ sub job_action {
         $job = $job->[0];
         
         if ($action eq 'create') {
+            # get from shock node if given
+            if (exists $post->{input_id}) {
+                my $nodeid = $post->{input_id};
+                eval {
+                    my $node = $self->get_shock_node($nodeid, $self->token, $self->user_auth);
+                    # pull from stats_info and pipeline_info in attributes
+                    foreach my $x (('stats_info', 'pipeline_info')) {
+                        if (exists($node->{attributes}{$x}) && ref($node->{attributes}{$x})) {
+                            foreach my $k (keys %{$node->{attributes}{$x}}) {
+                                # only add values that are not already given
+                                if (! exists($post->{$k})) {
+                                    $post->{$k} = $node->{attributes}{$x}{$k};
+                                }
+                            }
+                        }
+                    }
+                };
+                delete $post->{input_id};
+                if ($@ || (! $post)) {
+                    $self->return_data( {"ERROR" => "unable to obtain sequence file info from shock node ".$nodeid}, 500 );
+                }
+            }
+            # fix assembly defaults
+            if (exists($post->{sequencing_method_guess}) && ($post->{sequencing_method_guess} eq "assembled")) {
+                $post->{assembled}    = 'yes';
+                $post->{filter_ln}    = 'no';
+                $post->{filter_ambig} = 'no';
+                $post->{dynamic_trim} = 'no';
+                $post->{dereplicate}  = 'no';
+                $post->{bowtie}       = 'no';
+            }
+            # set pipeline defaults if missing
+            foreach my $key (@{$self->pipeline_opts}) {
+                if (exists($self->pipeline_defaults->{$key}) && (! exists($post->{$key}))) {
+                    $post->{$key} = $self->pipeline_defaults->{$key};
+                }
+            }
+            if ($post->{file_type} eq 'fasta') {
+                $post->{file_type} = 'fna';
+            }
+            # fix booleans
+            foreach my $key (keys %$post) {
+                if ($post->{$key} eq 'yes') {
+                    $post->{$key} = 1;
+                } elsif ($post->{$key} eq 'no') {
+                    $post->{$key} = 0;
+                }
+            }
             # check params
+            delete $post->{metagenome_id};
             foreach my $key (keys %{$self->{create_param}}) {
-                unless (exists $post->{$key}) {
+                if (($key eq 'metagenome_id') || ($key eq 'input_id')) {
+                    next;
+                }
+                if (! exists($post->{$key})) {
                     $self->return_data( {"ERROR" => "Missing required parameter '$key'"}, 404 );
                 }
             }
+            # calculate length trim
+        	$post->{max_ln} = int($post->{average_length} + ($post->{filter_ln_mult} * $post->{standard_deviation_length}));
+        	$post->{min_ln} = int($post->{average_length} - ($post->{filter_ln_mult} * $post->{standard_deviation_length}));
+        	if ($post->{min_ln} < 1) {
+        	    $post->{min_ln} = 1;
+        	}
             # create job
             $job  = $master->Job->initialize($self->user, $post, $job);
             $data = {
                 timestamp => $job->{created_on},
                 options   => $job->{options},
                 job_id    => $job->{job_id}
+            };
+        } elsif (($action eq 'submit') || ($action eq 'resubmit')) {
+            my $cmd;
+            if ($action eq 'resubmit') {
+                $cmd = $Conf::resubmit_to_awe." --job_id ".$job->{job_id}." --awe_id ".$post->{awe_id}." --shock_url ".$Conf::shock_url." --awe_url ".$Conf::awe_url;
+            } else {
+                my $jdata = $job->data();
+                $cmd = $Conf::submit_to_awe." --job_id ".$job->{job_id}." --input_node ".$post->{input_id}." --shock_url ".$Conf::shock_url." --awe_url ".$Conf::awe_url;
+                if (exists $jdata->{submission}) {
+                    $cmd .= " --submit_id ".$jdata->{submission};
+                }
+            }
+            my @log = `$cmd 2>&1`;
+            chomp @log;
+            my @err = grep { $_ =~ /^ERROR/ } @log;
+            if (@err) {
+                $self->return_data( {"ERROR" => join("\n", @log)}, 400 );
+            }
+            my @aweid = grep { $_ =~ /^awe job/ } @log;
+            my $aid   = "";
+            if (@aweid) {
+                (undef, $aid) = split(/\t/, $aweid[0]);
+            }
+            if ($aid) {
+                $data = {
+                    awe_id => $aid,
+                    log    => join("\n", @log)
+                };
+                # update job attribute
+                $job->data("pipeline_id", $aid);
+                # update inbox attributes if submit
+                if ($post->{input_id} && ($action eq 'submit')) {
+                    my $node = $self->get_shock_node($post->{input_id}, $self->token, $self->user_auth);
+                    my $attr = $node->{attributes};
+                    my $action = {
+                        id => $aid,
+                        name => "pipeline",
+                        status => "queued",
+                        start => strftime("%Y-%m-%dT%H:%M:%S", gmtime)
+                    };
+                    if (exists $attr->{actions}) {
+                        push @{$attr->{actions}}, $action;
+                    } else {
+                        $attr->{actions} = [$action];
+                    }
+                    $self->update_shock_node($post->{input_id}, $attr, $self->token, $self->user_auth);
+                    $self->edit_shock_acl($post->{input_id}, $self->token, 'mgrast', 'put', 'all', $self->user_auth);
+                }
+            } else {
+                $self->return_data( {"ERROR" => "Unknown error, missing AWE job ID:\n".join("\n", @log)}, 500 );
+            }
+        } elsif ($action eq 'share') {
+            # get user to share with
+            my $share_user = undef;
+            if ($post->{user_id}) {
+                my (undef, $uid) = $post->{user_id} =~ /^(mgu)?(\d+)$/;
+                $share_user = $master->User->init({ _id => $uid });
+            } elsif ($post->{user_email}) {
+                $share_user = $master->User->init({ email => $post->{user_email} });
+            } else {
+                $self->return_data( {"ERROR" => "Missing required parameter user_id or user_email"}, 404 );
+            }
+            unless ($share_user && ref($share_user)) {
+                $self->return_data( {"ERROR" => "Unable to find user to share with"}, 404 );
+            }
+            # share rights if not owner
+            unless ($share_user->_id eq $job->owner->_id) {
+                my @rights = ('view');
+                if ($post->{edit}) {
+                    push @rights, 'edit';
+                }
+                foreach my $name (@rights) {
+                    my $right_query = {
+                        name => $name,
+                	    data_type => 'metagenome',
+                	    data_id => $job->metagenome_id,
+                	    scope => $share_user->get_user_scope
+                    };
+                    unless(scalar( @{$master->Rights->get_objects($right_query)} )) {
+                        $right_query->{granted} = 1;
+                        $right_query->{delegated} = 1;
+                        my $right = $master->Rights->create($right_query);
+            	        unless (ref $right) {
+            	            $self->return_data( {"ERROR" => "Failed to create ".$name." right in the user database, aborting."}, 500 );
+            	        }
+                    }
+                }
+            }
+            # get all who can view / skip owner
+            my $view_query = {
+                name => 'view',
+        	    data_type => 'metagenome',
+        	    data_id => $job->metagenome_id
+            };
+            my $shared = [];
+            my $owner_user = $master->User->init({ _id => $job->owner->_id });
+            my $view_rights = $master->Rights->get_objects($view_query);
+            foreach my $vr (@$view_rights) {
+                next if (($owner_user->get_user_scope->_id eq $vr->scope->_id) || ($vr->scope->name =~ /^token\:/));
+                push @$shared, $vr->scope->name_readable;
+            }
+            $data = { shared => $shared };
+        } elsif ($action eq 'public') {
+            # update shock nodes
+            my $nodes = $self->get_shock_query({'type' => 'metagenome', 'id' => 'mgm'.$job->{metagenome_id}}, $self->mgrast_token);
+            foreach my $n (@$nodes) {
+                my $attr = $n->{attributes};
+                $attr->{status} = 'public';
+                $self->update_shock_node($n->{id}, $attr, $self->mgrast_token);
+                $self->edit_shock_public_acl($n->{id}, $self->mgrast_token, 'put', 'read');
+            }
+            # update db
+            $job->public(1);
+            $data = { public => $job->public ? 1 : 0 };
+        } elsif ($action eq 'delete') {
+            # Auf Wiedersehen!
+            my $reason = $post->{reason} || "";
+            my ($status, $message) = $job->user_delete($self->user, $reason);
+            $data = {
+                deleted => $status,
+                error   => $message
             };
         } elsif ($action eq 'addproject') {
             # check id format
@@ -222,7 +494,7 @@ sub job_action {
             # add it
             my $status = $project->add_job($job);
             $data = {
-                project_id   => $project->{id},
+                project_id   => "mgp".$project->{id},
                 project_name => $project->{name},
                 status       => $status
             };
@@ -260,25 +532,6 @@ sub reserve_kbase_id {
         $self->return_data( {"ERROR" => "Unable to reserve KBase id for $mgid"}, 500 );
     }
     return $result->[0]->{$mgid};
-}
-
-sub get_post_data {
-    my ($self) = @_;
-    
-    # posted data
-    my $post_data = $self->cgi->param('POSTDATA') ? $self->cgi->param('POSTDATA') : join(" ", $self->cgi->param('keywords'));
-    unless ($post_data) {
-        $self->return_data( {"ERROR" => "POST request missing data"}, 400 );
-    }
-    
-    my $pdata = {};
-    eval {
-        $pdata = $self->json->decode($post_data);
-    };
-    if ($@ || (scalar(keys %$pdata) == 0)) {
-        $self->return_data( {"ERROR" => "unable to obtain POSTed data: ".$@}, 500 );
-    }
-    return $pdata;
 }
 
 1;

@@ -26,7 +26,7 @@ sub new {
                            'value' => ['hash', 'hash of metadata objects by label']}, 'samples and their metadata'] ],
             "library" => [ 'hash', [{'key' => ['string', 'library type'],
                            'value' => ['hash', 'hash of metadata objects by label']}, 'libraries and their metadata'] ],
-            "ep"      => [ 'hash', [{'key' => ['string', 'enviromental package type'],
+            "ep"      => [ 'hash', [{'key' => ['string', 'environmental package type'],
                            'value' => ['hash', 'hash of metadata objects by label']}, 'eps and their metadata'] ]
         },
         "cv" => {
@@ -46,6 +46,11 @@ sub new {
             "type" => ['string', 'this type'],
             "version" => ['string', 'version of this ontology']
         },
+        "view" => {
+            "label" => [ 'string', 'metadata label' ],
+            "total" => [ 'int', 'count of unique values' ],
+            "values" => [ 'list', ['string', 'metadata value'] ]
+        },
         "export" => {
             "id"        => [ 'string', 'unique object identifier' ],
             "name"      => [ 'string', 'human readable identifier' ],
@@ -53,6 +58,11 @@ sub new {
             "sampleNum" => [ 'int', 'number of samples in project' ],
             "data"      => [ 'hash', [{'key' => ['string', 'metadata label'],
                              'value' => ['object', 'project metadata objects']}, 'hash of metadata by label'] ]
+        },
+        "add" => {
+            'project' => [ 'string', 'unique object identifier' ],
+            'added'   => [ 'list', ['string', 'ID of metagenome with metadata added'] ],
+            'errors'  => [ 'list', ['string', 'error message that may have occurred'] ]
         },
         "validate_post" => {
             'is_valid' => [ 'boolean', 'the metadata sheet is valid' ],
@@ -111,7 +121,8 @@ sub info {
                                  'body'     => {},
                                  'options'  => {
                                      'label'   => ['string', 'metadata label'],
-                                     'version' => ['string', 'version of CV select list or ontology to use'] } }
+                                     'version' => ['string', 'version of CV select list or ontology to use']
+                                }}
             },
             { 'name'        => "ontology",
               'request'     => $self->cgi->url."/".$self->name."/ontology",
@@ -127,6 +138,18 @@ sub info {
                                  'body'     => {},
                                  'options'  => {} }
             },
+            { 'name'        => "view",
+              'request'     => $self->cgi->url."/".$self->name."/view/{label}",
+              'description' => "Returns list of unique metadata values for given label",
+              'example'     => [ $self->cgi->url."/".$self->name."/view/biome",
+                                 'all biome values' ],
+              'method'      => "GET",
+              'type'        => "synchronous",
+              'attributes'  => $self->attributes->{view},
+              'parameters'  => { 'options'  => {},
+                                 'required' => { "label" => ["string", "valid metadata label"] },
+                                 'body'     => {} }
+            },
             { 'name'        => "export",
               'request'     => $self->cgi->url."/".$self->name."/export/{ID}",
               'description' => "Returns full nested metadata for a project in same format as template, or metadata for a single metagenome.",
@@ -139,9 +162,43 @@ sub info {
                                  'required' => { "id" => ["string", "unique object identifier"] },
                                  'body'     => {} }
             },
+            { 'name'        => "import",
+              'request'     => $self->cgi->url."/".$self->name."/import",
+              'description' => "Create project with given metadata spreadsheet and metagenome IDs, either upload or shock node",
+              'example'     => [ 'curl -X POST -F "metagenome=mgm12345" -F "metagenome=mgm67890" -F "upload=@metadata.xlsx" "'.$self->cgi->url."/".$self->name.'/import"',
+                              	 "create project with metadata from file 'metadata.xlsx'" ],
+              'method'      => "POST",
+              'type'        => "synchronous",
+              'attributes'  => $self->attributes->{add},
+              'parameters'  => { 'options'  => {},
+                                 'required' => {},
+                                 'body'     => {
+                                     "metagenome" => ['string', 'unique metagenome ID'],
+                                     "upload"     => ["file", "xlsx or xls format spreadsheet with metadata"],
+                                     "node_id"    => ["string", "shock node ID of metadata spreadsheet"]
+                                }}
+            },
+            { 'name'        => "update",
+              'request'     => $self->cgi->url."/".$self->name."/update",
+              'description' => "Update project with given metadata spreadsheet and metagenome IDs, either upload or shock node",
+              'example'     => [ 'curl -X POST -F "project=mgp123" -F "upload=@metadata.xlsx" "'.$self->cgi->url."/".$self->name.'/update"',
+                              	 "update project mgp123 with metadata from file 'metadata.xlsx'" ],
+              'method'      => "POST",
+              'type'        => "synchronous",
+              'attributes'  => $self->attributes->{add},
+              'parameters'  => { 'options'  => {},
+                                 'required' => {},
+                                 'body'     => {
+                                     "project"    => ["string", "unique project identifier"],
+                                     "metagenome" => ['string', 'unique metagenome ID'],
+                                     "upload"     => ["file", "xlsx or xls format spreadsheet with metadata"],
+                                     "node_id"    => ["string", "shock node ID of metadata spreadsheet"],
+                                     "map_by_id"  => ["boolean", "option to map metadata from spreadsheet to metagenomes using ID, default is name"]
+                                }}
+            },
             { 'name'        => "validate",
               'request'     => $self->cgi->url."/".$self->name."/validate",
-              'description' => "Validate given metadata spreadsheet",
+              'description' => "Validate given metadata spreadsheet, either upload or shock node",
               'example'     => [ 'curl -X POST -F "upload=@metadata.xlsx" "'.$self->cgi->url."/".$self->name.'/validate"',
                             	 "validate file 'metadata.xlsx' against MG-RAST metadata template" ],
               'method'      => "POST",
@@ -149,13 +206,16 @@ sub info {
               'attributes'  => $self->attributes->{validate_post},
               'parameters'  => { 'options'  => {},
                                  'required' => {},
-                                 'body'     => {"upload" => ["file", "xlsx or xls format spreadsheet with metadata"]} }
+                                 'body'     => {
+                                     "upload" => ["file", "xlsx or xls format spreadsheet with metadata"],
+                                     "node_id" => ["string", "shock node ID of metadata spreadsheet"]
+                                }}
             },
             { 'name'        => "validate",
               'request'     => $self->cgi->url."/".$self->name."/validate",
               'description' => "Validate given metadata value",
               'example'     => [ $self->cgi->url."/".$self->name."/validate?category=sample&label=material&value=soil",
-                               	 "check if 'soil' is a vaild term for sample material" ],
+                               	 "check if 'soil' is a valid term for sample material" ],
               'method'      => "GET",
               'type'        => "synchronous",  
               'attributes'  => $self->attributes->{validate_get},
@@ -171,7 +231,8 @@ sub info {
                                                            ['env_package', 'label belongs to env_package metadata']]],
                                    	 'label'    => ['string', 'metadata label'],
                                    	 'value'    => ['string', 'metadata value'],
-                                   	 'version'  => ['string', 'version of CV select list or ontology to use'] } }
+                                   	 'version'  => ['string', 'version of CV select list or ontology to use']
+                                }}
             } ]
     };
     $self->return_data($content);
@@ -183,20 +244,24 @@ sub request {
     # determine sub-module to use
     if (scalar(@{$self->rest}) == 0) {
         $self->info();
-    } elsif (($self->rest->[0] eq 'template') || ($self->rest->[0] eq 'cv') || ($self->rest->[0] eq 'ontology')) {
+    } elsif ($self->rest->[0] =~ /^(template|cv|ontology)$/) {
         $self->static($self->rest->[0]);
+    } elsif (($self->rest->[0] eq 'view') && (scalar(@{$self->rest}) == 2)) {
+        $self->list_values($self->rest->[1]);
     } elsif (($self->rest->[0] eq 'export') && (scalar(@{$self->rest}) == 2)) {
         $self->instance($self->rest->[1]);
-    } elsif ($self->rest->[0] eq 'validate') {
-        $self->validate();
+    } elsif (($self->rest->[0] eq 'validate') && ($self->method eq 'GET')) {
+        $self->validate_value();
+    } elsif (($self->rest->[0] =~ /^(validate|import|update)$/) && ($self->method eq 'POST')) {
+        $self->process_file($self->rest->[0]);
     } else {
         $self->info();
     }
 }
 
-# return static data: template or cv
+# return static data: template / cv / ontology
 sub static {
-    my ($self, $type, $version) = @_;
+    my ($self, $type) = @_;
     
     my $data = {};
     # get CV data
@@ -259,6 +324,27 @@ sub static {
     $self->return_data($data);
 }
 
+# the resource is called with a label parameter
+sub list_values {
+    my ($self, $label) = @_;
+    
+    # get database
+    my $master = $self->connect_to_datasource();
+    my $mddb = MGRAST::Metadata->new();
+    
+    my $values = $mddb->get_unique_for_tag($label);
+    if (@$values == 0) {
+        $self->return_data( {"ERROR" => "Invalid metadata label: ".$label}, 400 );
+    }
+    
+    my $data = {
+        label => $label,
+        total => scalar(@$values),
+        values => $values
+    };
+    $self->return_data($data);
+}
+
 # the resource is called with an id parameter
 sub instance {
     my ($self, $id) = @_;
@@ -268,12 +354,12 @@ sub instance {
     my $mddb = MGRAST::Metadata->new();
     
     # project export
-    if ($id =~ /^(mgp)?(\d+)$/) {
-        my $pid = $2;
+    if ($id =~ /^mgp(\d+)$/) {
+        my $pid = $1;
         # get data
         my $project = $master->Project->init( {id => $pid} );
         unless (ref($project)) {
-            $self->return_data( {"ERROR" => "id pid does not exists"}, 404 );
+            $self->return_data( {"ERROR" => "project id $id does not exists"}, 404 );
         }
         # check rights
         unless ( $project->{public} ||
@@ -287,12 +373,12 @@ sub instance {
         $self->return_data($data);
     }
     # metagenome export
-    elsif ($id =~ /^(mgm)?(\d+\.\d+)$/) {
-        my $mgid = $2;
+    elsif ($id =~ /^mgm(\d+\.\d+)$/) {
+        my $mgid = $1;
         # get data
         my $job = $master->Job->get_objects( {metagenome_id => $mgid} );
         unless ($job && @$job) {
-            $self->return_data( {"ERROR" => "id $id does not exist"}, 404 );
+            $self->return_data( {"ERROR" => "metagenome id $id does not exist"}, 404 );
         }
         $job = $job->[0];
         # check rights
@@ -310,85 +396,98 @@ sub instance {
     }
     # bad id
     else {
-        $self->return_data( {"ERROR" => "invalid id format: " . $id}, 400 );
+        $self->return_data( {"ERROR" => "invalid id format: ".$id}, 400 );
     }
 }
 
-# validate metadata, this can be GET for single value or POST for whole spreadsheet
-sub validate {
+# validate a single value
+sub validate_value {
     my ($self) = @_;
     
     my $data = {};
-    my $mddb  = MGRAST::Metadata->new();
+    my $mddb = MGRAST::Metadata->new();
     
-    if ($self->method eq 'GET') {
-        # paramater cv
-        my $categories = {project => 1, sample => 1, library => 1, env_package => 1};
-        my $groups     = {migs => 1, mims => 1, mixs => 1};
+    # paramater cv
+    my $categories = {project => 1, sample => 1, library => 1, env_package => 1};
+    my $groups     = {migs => 1, mims => 1, mixs => 1};
     
-        # get paramaters
-        my $group = $self->cgi->param('group') || 'mixs';
-        my $cat   = $self->cgi->param('category');
-        my $label = $self->cgi->param('label');
-        my $value = $self->cgi->param('value');
-        my $ver   = $self->cgi->param('version');
+    # get paramaters
+    my $group = $self->cgi->param('group') || 'mixs';
+    my $cat   = $self->cgi->param('category');
+    my $label = $self->cgi->param('label');
+    my $value = $self->cgi->param('value');
+    my $ver   = $self->cgi->param('version');
 
-        unless ($group && exists($groups->{$group})) {
-            $self->return_data({"ERROR" => "Invalid / missing parameter 'group': ".$group." - valid types are [ '".join("', '", keys %$groups)."' ]"}, 404);
-        }
-        unless ($cat && exists($categories->{$cat})) {
-            $self->return_data({"ERROR" => "Invalid / missing parameter 'category': ".$cat." - valid types are [ '".join("', '", keys %$categories)."' ]"}, 404);
-        }
-        unless ($label) {
-            $self->return_data({"ERROR" => "Missing parameter 'label'"}, 404);
-        }
-        unless ($value) {
-            $self->return_data({"ERROR" => "Missing parameter 'value'"}, 404);
-        }
+    unless ($group && exists($groups->{$group})) {
+        $self->return_data({"ERROR" => "Invalid / missing parameter 'group': ".$group." - valid types are [ '".join("', '", keys %$groups)."' ]"}, 404);
+    }
+    unless ($cat && exists($categories->{$cat})) {
+        $self->return_data({"ERROR" => "Invalid / missing parameter 'category': ".$cat." - valid types are [ '".join("', '", keys %$categories)."' ]"}, 404);
+    }
+    unless ($label) {
+        $self->return_data({"ERROR" => "Missing parameter 'label'"}, 404);
+    }
+    unless ($value) {
+        $self->return_data({"ERROR" => "Missing parameter 'value'"}, 404);
+    }
 
-        # internal name
-        if ($cat eq 'env_package') { $cat = 'ep'; }
+    # internal name
+    if ($cat eq 'env_package') { $cat = 'ep'; }
 
-        # special case: geo_loc_name
-        if (($cat eq 'sample') && ($label eq 'geo_loc_name')) { $label = 'country'; }
+    # special case: geo_loc_name
+    if (($cat eq 'sample') && ($label eq 'geo_loc_name')) { $label = 'country'; }
 
-        # special case: lat_lon
-        if (($cat eq 'sample') && ($label eq 'lat_lon')) {
-            my ($lat, $lon) = split(/\s+/, $value);
-            my ($lat_valid, $lat_err) = @{ $mddb->validate_value($cat, 'latitude', $lat) };
-            my ($lon_valid, $lon_err) = @{ $mddb->validate_value($cat, 'longitude', $lon) };
-            if ($lat_valid && $lon_valid) {
-	            $data = {is_valid => 1, message => undef};
-            } else {
-	            $data = {is_valid => 0, message => "unable to validate $value: $lat_err"};
-            }
-        }
-        # invalid label
-        elsif (! $mddb->validate_tag($cat, $label)) {
-            $data = {is_valid => 0, message => "label '$label' does not exist in category '".(($cat eq 'ep') ? 'env_package' : $cat)."'"};
-        }
-        # not mixs label
-        elsif (! $mddb->validate_mixs($label)) {
-            $data = {is_valid => 0, message => "label '$label' is not a valid ".uc($group)." term"};
-        }
-        # test it
-        else {
-            my ($is_valid, $err_msg) = @{ $mddb->validate_value($cat, $label, $value) };
-            if ($is_valid) {
-	            $data = {is_valid => 1, message => undef};
-            } else {
-	            $data = {is_valid => 0, message => "unable to validate $value: $err_msg"};
-            }
+    # special case: lat_lon
+    if (($cat eq 'sample') && ($label eq 'lat_lon')) {
+        my ($lat, $lon) = split(/\s+/, $value);
+        my ($lat_valid, $lat_err) = @{ $mddb->validate_value($cat, 'latitude', $lat) };
+        my ($lon_valid, $lon_err) = @{ $mddb->validate_value($cat, 'longitude', $lon) };
+        if ($lat_valid && $lon_valid) {
+	        $data = {is_valid => 1, message => undef};
+        } else {
+	        $data = {is_valid => 0, message => "unable to validate $value: $lat_err"};
         }
     }
-    elsif ($self->method eq 'POST') {
-        # get metadata file
-        my $tmp_dir = "$Conf::temp";
-        my $fname   = $self->cgi->param('upload');
-        
-        unless ($fname) {
-            $self->return_data({"ERROR" => "Invalid parameters, requires filename and data"}, 404);
+    # invalid label
+    elsif (! $mddb->validate_tag($cat, $label)) {
+        $data = {is_valid => 0, message => "label '$label' does not exist in category '".(($cat eq 'ep') ? 'env_package' : $cat)."'"};
+    }
+    # not mixs label
+    elsif (! $mddb->validate_mixs($label)) {
+        $data = {is_valid => 0, message => "label '$label' is not a valid ".uc($group)." term"};
+    }
+    # test it
+    else {
+        my ($is_valid, $err_msg) = @{ $mddb->validate_value($cat, $label, $value) };
+        if ($is_valid) {
+	        $data = {is_valid => 1, message => undef};
+        } else {
+	        $data = {is_valid => 0, message => "unable to validate $value: $err_msg"};
         }
+    }
+    $self->return_data($data);
+}
+
+# POST function for uploaded file or shock node
+# validate metadata spreadsheet
+# import metadata for new project
+# update metadata for existing project 
+sub process_file {
+    my ($self, $type) = @_;
+    
+    my $data   = {};
+    my $master = $self->connect_to_datasource();
+    my $mddb   = MGRAST::Metadata->new();
+    my $post   = $self->get_post_data(["upload", "node_id", "project", "metagenome", "map_by_id"]);
+    
+    # get metadata file
+    my $tmp_dir = $Conf::temp;
+    my $fname   = "";
+    my $node    = {};
+    
+    # uploaded / not POST data
+    if ($post->{upload}) {
+        $fname = $post->{upload};
         if ($fname =~ /\.\./) {
             $self->return_data({"ERROR" => "Invalid parameters, trying to change directory with filename, aborting"}, 400);
         }
@@ -403,26 +502,116 @@ sub validate {
         my $io_handle = $fhdl->handle;
         if (open FH, ">$tmp_dir/$fname") {
             my ($bytesread, $buffer);
-            while ($bytesread = $io_handle->read($buffer,4096)) {
+            while ($bytesread = $io_handle->read($buffer, 4096)) {
         	    print FH $buffer;
         	}
             close FH;
         } else {
             $self->return_data({"ERROR" => "Storing object failed - could not open target file"}, 507);
         }
-        
-        # validate file
-        my ($is_valid, $obj, $log) = $mddb->validate_metadata("$tmp_dir/$fname");
-        if ($is_valid) {
-            delete $obj->{is_valid};
-            $data = {is_valid => 1, message => undef, metadata => $obj};
-        } else {
-            $data = {is_valid => 0, message => $log, errors => $obj->{data}};
+    }
+    # from shock node
+    elsif ($post->{node_id}) {
+        $node = $self->get_shock_node($post->{node_id}, $self->token, $self->user_auth);
+        unless (exists $node->{attributes}{stats_info}) {
+            ($node, undef) = $self->get_file_info(undef, $node, $self->token, $self->user_auth);
+        }
+        $fname = $node->{file}{name};
+        my ($res, $err) = $self->get_shock_file($post->{node_id}, "$tmp_dir/$fname", $self->token, $self->user_auth);
+        if ($err) {
+            $self->return_data({"ERROR" => $err}, 500);
         }
     }
+    # bad POST
     else {
-        $self->return_data({"ERROR" => "Invalid request method: ".$self->method}, 400);
+        $self->return_data({"ERROR" => "Invalid parameters, requires uploaded file or shock node id"}, 404);
     }
+        
+    # validate file
+    my ($is_valid, $md_obj, $log) = $mddb->validate_metadata("$tmp_dir/$fname");
+
+    # is a shock node / update it
+    if ($is_valid && $node && ref($node)) {
+        my $attr = $node->{attributes};
+        $attr->{data_type} = 'metadata';
+        $self->update_shock_node($node->{id}, $attr, $self->token, $self->user_auth);
+    }
+
+    # run different actions
+    if ($type eq 'validate') {
+        if ($is_valid) {
+            delete $md_obj->{is_valid};
+            $data = {is_valid => 1, message => undef, metadata => $md_obj};
+        } else {
+            $data = {is_valid => 0, message => $log, errors => $md_obj->{data}};
+        }
+    }
+    elsif (($type eq 'import') || ($type eq 'update')) {
+        unless ($is_valid) {
+            $self->return_data({"ERROR" => "Unprocessable metadata:\n".join("\n", @$log, @{$md_obj->{data}})}, 422);
+        }
+        unless ($post->{metagenome} && (@{$post->{metagenome}} > 0)) {
+            $self->return_data({"ERROR" => "Invalid parameters, import or update requires metagenome ID(s)"}, 404);
+        }
+        if (($type eq 'update') && (! $post->{project})) {
+            $self->return_data({"ERROR" => "Invalid parameters, update requires project ID"}, 404);
+        }
+        
+        # get metagenome objects
+        my @jobs = ();
+        foreach my $id (@{$post->{metagenome}}) {
+            if ($id =~ /^mgm(\d+\.\d+)$/) {
+                my $mgid = $1;
+                # get data
+                my $job = $master->Job->get_objects( {metagenome_id => $mgid} );
+                unless ($job && @$job) {
+                    $self->return_data( {"ERROR" => "Metagenome id $id does not exist"}, 404 );
+                }
+                $job = $job->[0];
+                # check rights
+                unless ($self->user && ($self->user->has_right(undef, 'edit', 'metagenome', $mgid) || $self->user && $self->user->has_star_right('edit', 'metagenome'))) {
+                    $self->return_data( {"ERROR" => "Insufficient permissions to view this data"}, 401 );
+                }
+                push @jobs, $job;
+            } else {
+                $self->return_data( {"ERROR" => "Invalid metagenome id format: ".$id}, 400 );
+            }
+        }
+        
+        # get project object (if exists)
+        my $project_name = $md_obj->{data}{project_name}{value};
+        my $project_id   = ($type eq 'update') ? $post->{project} : (exists($md_obj->{id}) ? $md_obj->{id} : '');
+        my $project_obj  = undef;
+        
+        # get project from id or name, or create it
+        my $projects = [];
+        if ($project_id) {
+            if ($project_id =~ /^mgp(\d+)$/) {
+                my $pnum  = $1;
+                $projects = $master->Project->get_objects( {id => $pnum} );
+            } else {
+                $self->return_data( {"ERROR" => "invalid project id format: ".$project_id}, 400 );
+            }
+        } elsif ($project_name) {
+            $projects = $master->Project->get_objects( {name => $project_name} );
+        }
+        if (scalar(@$projects) > 0) {
+            $project_obj = $projects->[0];
+            # check rights
+            unless ($self->user && ($self->user->has_right(undef, 'edit', 'project', $project_obj->id) || $self->user->has_star_right('edit', 'project'))) {
+                $self->return_data( {"ERROR" => "insufficient permissions to edit this project"}, 401 );
+            }
+        }
+        
+        # import or update
+        my $mapbyid = $post->{map_by_id} ? 1 : 0;
+        my ($pnum, $added, $err_msg) = $mddb->add_valid_metadata($self->user, $md_obj, \@jobs, $project_obj, $mapbyid);
+        if ($added && scalar(@$added)) {
+            @$added = map { 'mgm'.$_->{metagenome_id} } @$added;
+        }
+        $data = {project => 'mgp'.$pnum, added => $added, errors => $err_msg};
+    }
+    
     $self->return_data($data);
 }
 

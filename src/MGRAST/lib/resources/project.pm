@@ -31,7 +31,7 @@ sub new {
     	                    "version"        => [ 'integer', 'version of the object' ],
     	                    "url"            => [ 'uri', 'resource location of this object instance' ],
     	                    "status"         => [ 'cv', [ ['public', 'object is public'],
-							                              ['private', 'object is private'] ] ]
+							  ['private', 'object is private'] ] ]
     	                  };
     return $self;
 }
@@ -109,6 +109,51 @@ sub instance {
 
     # get database
     my $master = $self->connect_to_datasource();
+
+    # check if this is an action request
+    my $requests = { 'movemetagenomes' => 1 };
+    if (scalar(@$rest) > 1 && $requests->{$rest->[1]}) {
+      # move metagenomes to a different project
+      if ($rest->[1] eq 'movemetagenomes') {
+	unless ($self->user->has_star_right('edit', 'user')) {
+	  $self->return_data( {"ERROR" => "insufficient permissions for this user call"}, 401 );
+	}
+	my ($id2) = $self->cgi->param('target') =~ /^mgp(\d+)$/;
+	if (! $id2) {
+	   $self->return_data( {"ERROR" => "invalid id format: " . $self->cgi->param('target')}, 400 );
+	}
+	my $project_a = $master->Project->init( {id => $id} );
+	my $project_b = $master->Project->init( {id => $id2} );
+
+	unless (ref($project_a) && ref($project_b)) {
+	  $self->return_data( {"ERROR" => "id $id or $id2 does not exists"}, 404 );
+	}
+
+	my $proj_job = $master->ProjectJob->get_objects({ project => $project_a });
+	my $job_a_hash = {};
+	foreach my $j (@$proj_job) {
+	  $job_a_hash->{$j->job->{metagenome_id}} = $j->job;
+	}
+	my @move_over = $self->cgi->param("move");
+	foreach my $m (@move_over) {
+	  $m =~ s/^mgm//;
+	  unless ($job_a_hash->{$m}) {
+	    $self->return_data( {"ERROR" => "metagenome not part of source project: " . $m}, 400 );
+	  }
+	}
+
+	foreach my $m (@move_over) {
+	  my $job = $master->Job->get_objects( { metagenome_id => $m });
+	  if (scalar(@$job)) {
+	    $job = $job->[0];
+	    $project_a->remove_job($job);
+	    $project_b->add_job($job);
+	  }
+	}
+
+	$self->return_data( {"OK" => "metagenomes moved"}, 200 );
+      }
+    }
   
     # get data
     my $project = $master->Project->init( {id => $id} );
@@ -147,8 +192,27 @@ sub query {
     if ($limit == 0) {
         $limit = 18446744073709551615;
     }
+
+    # check if we just want the private projects
+    if ($self->cgi->param('private')) {
+      unless ($self->user) {
+	$self->return_data({"ERROR" => "private option requires authentication"}, 400);
+      }
+      my $ids = [];
+      if ($self->cgi->param('edit')) {
+	$ids = $self->user->has_right_to(undef, 'edit', 'project');
+      } else {
+	$ids = $self->user->has_right_to(undef, 'view', 'project');
+      }
+      if (scalar(@$ids) && $ids->[0] eq '*') {
+	shift @$ids;
+      }
+      my $list = join(",", @$ids);
+      $total = scalar(@$ids);
+      $projects = $master->Project->get_objects( {$order => [undef, "id IN ($list) ORDER BY $order LIMIT $limit OFFSET $offset"]} );
+    }
     # get all items the user has access to
-    if (exists $self->rights->{'*'}) {
+    elsif (exists $self->rights->{'*'}) {
         $total    = $master->Project->count_all();
         $projects = $master->Project->get_objects( {$order => [undef, "_id IS NOT NULL ORDER BY $order LIMIT $limit OFFSET $offset"]} );
     } else {
@@ -194,13 +258,32 @@ sub prepare_data {
 	        $obj->{samples}   = \@samples;
 	        $obj->{libraries} = \@libraries;
             }
-            if (($self->cgi->param('verbosity') eq 'verbose') || ($self->cgi->param('verbosity') eq 'full')) {
+            if (($self->cgi->param('verbosity') eq 'verbose') || ($self->cgi->param('verbosity') eq 'full') || ($self->cgi->param('verbosity') eq 'summary')) {
 	        my $metadata  = $project->data();
 	        my $desc = $metadata->{project_description} || $metadata->{study_abstract} || " - ";
 	        my $fund = $metadata->{project_funding} || " - ";
 	        $obj->{metadata}       = $metadata;
 	        $obj->{description}    = $desc;
-	        $obj->{funding_source} = $fund;	
+	        $obj->{funding_source} = $fund;
+		
+		if ($self->cgi->param('verbosity') eq 'summary') {
+		  my $jdata = $project->metagenomes_summary();
+		  $obj->{metagenomes} = [];
+		  foreach my $row (@$jdata) {
+		    push(@{$obj->{metagenomes}}, { metagenome_id => $row->[0],
+						   name => $row->[1],
+						   basepairs => $row->[2],
+						   sequences => $row->[3],
+						   biome => $row->[4],
+						   feature => $row->[5],
+						   material => $row->[6],
+						   location => $row->[7],
+						   country => $row->[8],
+						   coordinates => $row->[9],
+						   sequence_type => $row->[10],
+						   sequencing_method => $row->[11] });
+		  }
+		}
             } elsif ($self->cgi->param('verbosity') ne 'minimal') {
 	        $self->return_data( {"ERROR" => "invalid value for option verbosity"}, 400 );
             }

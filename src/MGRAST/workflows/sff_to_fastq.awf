@@ -1,0 +1,75 @@
+{
+    "info": {
+        "pipeline": "inbox_sff_to_fastq",
+        "name": "[% job_name %]",
+        "user": "[% user_id %]",
+        "clientgroups":"[% clientgroups %]",
+        "userattr": {
+            "type": "inbox",
+            "id": "[% user_id %]",
+            "user": "[% user_name %]",
+            "email": "[% user_email %]"
+        }
+    },
+    "tasks": [
+        {
+            "cmd": {
+                "args": "-Q @[% sff_file %] -s [% fastq_file %]",
+                "description": "sff to fastq",
+                "name": "sff_extract_0_2_8",
+                "environ" : {
+                    "public" : { "PERL5LIB" : "/root/pipeline/lib:/root/pipeline/conf" }
+                }
+            },
+            "dependsOn": [],
+            "inputs": {
+                "[% sff_file %]": {
+                    "host": "[% shock_url %]",
+                    "node": "[% sff_file_id %]"
+                }
+            },
+            "outputs": {
+                "[% fastq_file %]": {
+                    "host": "[% shock_url %]",
+                    "node": "-",
+                    "attrfile": "userattr.json"
+                }
+            },
+            "userattr": {
+                "parent_seq_file": "[% sff_file_id %]"
+            },
+            "taskid": "0",
+            "totalwork": 1
+        },
+        {
+            "cmd": {
+                "args": "-input=@[% fastq_file %] -input_json=input_attr.json -output_json=output_attr.json -type=fastq",
+                "description": "sequence stats",
+                "name": "awe_seq_length_stats.pl",
+                "environ" : {
+                    "public" : { "PERL5LIB" : "/root/pipeline/lib:/root/pipeline/conf" }
+                }
+            },
+            "dependsOn": ["0"],
+            "inputs": {
+                "[% fastq_file %]": {
+                    "host": "[% shock_url %]",
+                    "origin": "0",
+                    "node": "-",
+                    "attrfile": "input_attr.json"
+                }
+            },
+            "outputs": {
+                "[% fastq_file %]": {
+                    "host": "[% shock_url %]",
+                    "origin": "0",
+                    "node": "-",
+                    "type": "update",
+                    "attrfile": "output_attr.json"
+                }
+            },
+            "taskid": "1",
+            "totalwork": 1
+        }
+    ]
+}

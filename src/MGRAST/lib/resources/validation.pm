@@ -17,6 +17,8 @@ sub new {
     
     # Add name / attributes
     $self->{name} = "validation";
+    $self->{md_node} = $Conf::mgrast_md_node_id || "";
+    $self->{md_template} = $Conf::mgrast_md_template_node_id || "";
     $self->{attributes} = { "template" => { "valid" => [ 'boolean', "boolean indicating whether the examined template is valid or not" ],
 					    "error" => [ 'array', [ "string", "array of invalid entries" ] ] },
 			    "data" => { "valid" => [ 'boolean', "boolean indicating whether the examined template is valid or not" ],
@@ -46,7 +48,7 @@ sub info {
 				    { 'name'        => "template",
 				      'request'     => $self->cgi->url."/".$self->name."/template/{ID}",				      
 				      'description' => "Checks if the referenced JSON structure is a valid template",
-				      'example'     => [ $self->cgi->url."/".$self->name."/template/".$Conf::mgrast_md_template_node_id,
+				      'example'     => [ $self->cgi->url."/".$self->name."/template/".$self->{md_template},
 				                         'validate the communities metagenomics template' ],
 				      'method'      => "GET" ,
 				      'type'        => "synchronous" ,  
@@ -57,7 +59,7 @@ sub info {
 				    { 'name'        => "data",
 				      'request'     => $self->cgi->url."/".$self->name."/data/{ID}",
 				      'description' => "Returns a single data object.",
-				      'example'     => [ $self->cgi->url."/".$self->name."/data/".$Conf::mgrast_md_node_id."?template=".$Conf::mgrast_md_template_node_id,
+				      'example'     => [ $self->cgi->url."/".$self->name."/data/".$self->{md_node}."?template=".$self->{md_template},
   				                         'validate a JSON data structure against the MG-RAST metagenome metadata template' ],
 				      'method'      => "GET" ,
 				      'type'        => "synchronous" ,  
@@ -100,7 +102,10 @@ sub template {
   }
 
   # get the shock template file
-  my $template_str = $self->get_shock_file($id, undef, $self->{token});
+  my ($template_str, $err) = $self->get_shock_file($id, undef, $self->{token});
+  if ($err) {
+      $self->return_data( {"ERROR" => $err}, 500 );
+  }
   my $json = JSON->new->allow_nonref;
   my $template = $json->decode($template_str);
   
@@ -347,7 +352,10 @@ sub data {
     $template_attributes = $template_node->{attributes};
 
     # getting file
-    my $template_str = $self->get_shock_file($template_id, undef, $self->{token});
+    my ($template_str, $err) = $self->get_shock_file($template_id, undef, $self->{token});
+    if ($err) {
+        $self->return_data( {"ERROR" => $err}, 500 );
+    }
     $template = $json->decode($template_str);
 
     # unless ($template_attributes->{data_type} eq 'template') {
@@ -355,16 +363,22 @@ sub data {
     # }
   } else {
     # getting node
-    my $template_node = $self->get_shock_node($Conf::mgrast_md_template_node_id, $Conf::shock_globus_token);
+    my $template_node = $self->get_shock_node($self->{md_template}, $self->mgrast_token);
     $template_attributes = $template_node->{attributes};
 
     # getting file
-    my $template_str = $self->get_shock_file($Conf::mgrast_md_template_node_id, undef, $Conf::shock_globus_token);
+    my ($template_str, $err) = $self->get_shock_file($self->{md_template}, undef, $self->mgrast_token);
+    if ($err) {
+        $self->return_data( {"ERROR" => $err}, 500 );
+    }
     $template = $json->decode($template_str);
   }
   # check shock type to be template
 
-  my $data_str = $self->get_shock_file($data_id, undef, $self->{token});
+  my ($data_str, $err) = $self->get_shock_file($data_id, undef, $self->{token});
+  if ($err) {
+      $self->return_data( {"ERROR" => $err}, 500 );
+  }
   my $data = $json->decode($data_str);
 
   my $data_status = { "valid" => 1,
@@ -503,7 +517,7 @@ sub reformat_template {
   use JSON;
   my $ua = LWP::UserAgent->new;
   my $json = new JSON;
-  my $data = $json->decode($ua->get('http://api.metagenomics.anl.gov/1/metadata/template')->content);
+  my $data = $json->decode($ua->get(($Conf::api_url || 'http://api.metagenomics.anl.gov/1/').'metadata/template')->content);
 
   my $template = { "name" => "mgrast",
 		   "label" => "MG-RAST",
@@ -610,8 +624,7 @@ sub reformat_template {
       }
   }
 
-  my $node = $self->set_shock_node("mgrast", undef, $template, $Conf::shock_globus_token);
-  #my $node = $self->update_shock_tags({ id => "40959bb3-131b-4fc4-abbb-c172feac7217", tags => [ "template", 'mgrast_template', 'communities_template' ]});
+  my $node = $self->set_shock_node("mgrast", undef, $template, $self->mgrast_token);
 
   return $self->return_data($node);
 }

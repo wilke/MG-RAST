@@ -126,7 +126,7 @@ sub info {
               				               'method'      => "GET",
               				               'type'        => "synchronous",  
               				               'attributes'  => $self->attributes,
-              				               'parameters'  => { 'options'  => { 'email' => ['string', "email of user to share with"] },
+              				               'parameters'  => { 'options'  => { 'name' => ['string', "globus login of user to share with"] },
               							                      'required' => { "nbid" => ["string", "unique notebook object identifier"] },
               							                      'body'     => {} } },
               							 { 'name'        => "publish",
@@ -266,7 +266,11 @@ sub prepare_data {
 	    $obj->{permission}  = $node->{attributes}{permission} || 'edit';
 	    $obj->{description} = $node->{attributes}{description} || '';
         if ($self->cgi->param('verbosity') && ($self->cgi->param('verbosity') eq 'full')) {
-            $obj->{notebook} = $self->json->decode( encode_utf8($self->get_shock_file($obj->{id}, undef, $self->shock_auth())) );
+            my ($content, $err) = $self->get_shock_file($obj->{id}, undef, $self->shock_auth());
+            if ($err) {
+                $self->return_data( {"ERROR" => $err}, 500 );
+            }
+            $obj->{notebook} = $self->json->decode( encode_utf8($content) );
         }
         push @$objects, $obj;
     }
@@ -277,12 +281,16 @@ sub prepare_data {
 sub clone_notebook {
     my ($self, $node, $params) = @_;
     
-    my $file = $self->json->decode( encode_utf8($self->get_shock_file($node->{id}, undef, $self->shock_auth())) );
+    my ($file, $err) = $self->get_shock_file($node->{id}, undef, $self->shock_auth());
+    if ($err) {
+        $self->return_data( {"ERROR" => $err}, 500 );
+    }
+    $file = $self->json->decode( encode_utf8($file) );
     my $attr = { name => $node->{attributes}{name}.'_copy',
                  nbid => undef,
                  type => $node->{attributes}{type} ? $node->{attributes}{type} : 'generic',
                  owner => $self->{user_info} ? $self->{user_info}{username} : 'public',
-                 access => $self->{user_info} ? [ $self->{user_info}{email} ] : [],
+                 access => $self->{user_info} ? [ $self->{user_info}{username} ] : [],
                  format => 'ipynb',
                  created => strftime("%Y-%m-%dT%H:%M:%S", gmtime),
                  permission => 'edit',
@@ -299,13 +307,13 @@ sub clone_notebook {
     return $new_node;
 }
 
-# share notebook - we add inputted email to read ACLs
+# share notebook - we add input usernames to read ACLs
 sub share_notebook {
     my ($self, $uuid) = @_;
     
-    my $email = $self->cgi->param('email') || undef;
-    unless ($email) {
-        $self->return_data( {"ERROR" => "Missing email of user to share notebook $uuid with."}, 500 );
+    my $name = $self->cgi->param('name') || undef;
+    unless ($name) {
+        $self->return_data( {"ERROR" => "Missing login name of user to share notebook $uuid with."}, 500 );
     }
     my $attr = {format => 'ipynb', nbid => $uuid};
     my @nb_set = sort {$b->{attributes}{created} cmp $a->{attributes}{created}} @{$self->get_shock_query($attr, $self->shock_auth())};
@@ -318,7 +326,7 @@ sub share_notebook {
     }
     # share all
     foreach my $n (@nb_set) {
-        $self->edit_shock_acl($n->{id}, $self->{nb_token}, $email, 'put', 'read')
+        $self->edit_shock_acl($n->{id}, $self->{nb_token}, $name, 'put', 'read')
     }
     my $data = $self->prepare_data( \@nb_set );
     $self->return_data($data);
@@ -404,7 +412,7 @@ sub upload_notebook {
                     nbid => $nb_obj->{metadata}{nbid} || $self->uuidv4(),
                     type => $nb_obj->{metadata}{type} || 'generic',
                     owner => $self->{user_info} ? $self->{user_info}{username} : 'public',
-                    access => $self->{user_info} ? [ $self->{user_info}{email} ] : [],
+                    access => $self->{user_info} ? [ $self->{user_info}{username} ] : [],
                     format => 'ipynb',
                     created => strftime("%Y-%m-%dT%H:%M:%S", gmtime),
                     permission => $nb_obj->{metadata}{permission} || 'edit',
@@ -429,7 +437,7 @@ sub shock_post_acl {
         map { $self->edit_shock_acl($id, $self->{nb_token}, $_, 'put', 'read') } @$access;
     } elsif ($self->{nb_token} && $self->{nb_info} && (@$access == 0)) {
         # public
-        $self->edit_shock_acl($id, $self->{nb_token}, $self->{nb_info}{email}, 'delete', 'read');
+        $self->edit_shock_public_acl($id, $self->{nb_token}, 'put', 'read');
     } else {
         # missing config
         print STDERR "Missing notebook config options\n";
