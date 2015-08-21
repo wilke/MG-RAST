@@ -163,18 +163,33 @@ sub instance {
   # check if this is an authentication request
   if (scalar(@$rest) == 1 && $rest->[0] eq 'authenticate') {
     if ($self->user) {
-      my $userToken = $master->Preferences->get_objects({ user => $self->user, name => "WebServicesKey" });
-      if (scalar(@$userToken)) {
-	$userToken = $userToken->[0]->{value};
-      } else {
-	$userToken = undef;
+      my $userToken  = $master->Preferences->get_objects({ user => $self->user, name => "WebServicesKey" });
+      my $expiration = $master->Preferences->get_objects({ user => $self->user, name => "WebServiceKeyTdate" });
+      if (! scalar(@$userToken) || $expiration->[0]->{value} < time) {
+	my $t = time + (60 * 60 * 24 * 7);
+	my $wkey = "";
+	my $possible = 'abcdefghijkmnpqrstuvwxyz23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
+	while (length($wkey) < 25) {
+	  $wkey .= substr($possible, (int(rand(length($possible)))), 1);
+	}
+	if (scalar(@$userToken)) {
+	  $userToken->[0]->value($wkey);
+	  $expiration->[0]->value($t);
+	} else {
+	  $userToken = [ $master->Preferences->create({ user => $self->user, name => "WebServicesKey", value => $wkey }) ];
+	  $expiration = [ $master->Preferences->create({ user => $self->user, name => "WebServiceKeyTdate", value => $t }) ];
+	}
       }
-      $self->return_data( { "login" => $self->user->{login},
-			    "firstname" => $self->user->{firstname},
-			    "lastname" => $self->user->{lastname},
-			    "email" => $self->user->{email},
-			    "id" => 'mgu'.$self->user->{_id},
-			    "token" => $userToken }, 200 );
+      my $data = {
+          "login" => $self->user->{login},
+          "firstname" => $self->user->{firstname},
+          "lastname" => $self->user->{lastname},
+          "email" => $self->user->{email},
+          "id" => 'mgu'.$self->user->{_id},
+          "token" => scalar(@$userToken) ? $userToken->[0]->value : undef,
+          "expiration" => scalar(@$expiration) ? $expiration->[0]->value : undef
+      };
+      $self->return_data( $data, 200 );
     } else {
       $self->return_data( {"ERROR" => "insufficient permissions for user call"}, 401 );
     }

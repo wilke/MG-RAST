@@ -37,19 +37,26 @@ RUN cd / && \
   cd site/CGI && \
   rm -fv api.cgi m5nr.cgi m5nr_rest.cgi
 
-# v4-uploader for v3
-RUN cd / && git clone --recursive https://github.com/MG-RAST/MG-RASTv4.git && cp -r /MG-RASTv4/* /MG-RAST/site/CGI/Html/
+# v4-uploader for v3, only include mgmainv3.html
+RUN cd / && git clone --recursive https://github.com/MG-RAST/MG-RASTv4.git && \
+  cp -vr /MG-RASTv4/* /MG-RAST/site/CGI/Html/ && \
+  rm -vf /MG-RAST/site/CGI/Html/*.html && \
+  cp -v /MG-RASTv4/mgmainv3.html /MG-RAST/site/CGI/Html/
 
 # pipeline dependencies
-RUN apt-get install -y python-dev python-pip
-RUN pip install gspread xlrd openpyxl lepl
-RUN cd / && git clone https://github.com/MG-RAST/pipeline.git
+RUN apt-get install -y python-dev python-pip && \
+  pip install openpyxl==1.8.6 && \
+  pip install gspread xlrd lepl && \
+  cd / && \
+  git clone https://github.com/MG-RAST/pipeline.git && \
+  cd pipeline && \
+  ln -s /MG-RAST/site/CGI/Tmp temp
 
 # 3rd party dependency: R
 RUN mkdir -p /tools && \
-  apt-get install -y gcc wget r-base r-cran-nlme r-cran-ecodist && \
+  apt-get install -y gcc wget r-base r-cran-nlme r-cran-ecodist r-cran-rcolorbrewer r-cran-xml && \
   echo 'install.packages("matlab", repos = "http://cran.wustl.edu")' | R --no-save && \
-  echo 'source("http://bioconductor.org/biocLite.R"); biocLite("pcaMethods")' | R --no-save
+  echo 'source("http://bioconductor.org/biocLite.R"); biocLite("pcaMethods"); biocLite("preprocessCore"); biocLite("DESeq")' | R --no-save
 
 # 3rd party dependency: FragGeneScan  
 RUN cd /tools && \
@@ -57,6 +64,11 @@ RUN cd /tools && \
   cd FragGeneScan && \
   make clean && \
   make fgs
+
+# setup sendmail
+RUN DEBIAN_FRONTEND=noninteractive apt-get -y install postfix && \
+  cp /usr/share/postfix/main.cf.debian /etc/postfix/main.cf && \
+  postconf -e relayhost=[smtp.mcs.anl.gov]
 
 # metazen
 RUN cd / && \

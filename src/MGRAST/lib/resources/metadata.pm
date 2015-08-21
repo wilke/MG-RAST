@@ -29,6 +29,11 @@ sub new {
             "ep"      => [ 'hash', [{'key' => ['string', 'environmental package type'],
                            'value' => ['hash', 'hash of metadata objects by label']}, 'eps and their metadata'] ]
         },
+        "version" => {
+            "material" => [ 'list', ['string', 'version number'] ],
+            "feature"  => [ 'list', ['string', 'version number'] ],
+            "biome"    => [ 'list', ['string', 'version number'] ]
+        },
         "cv" => {
             "ontology" => [ 'hash', [{'key' => ['string', 'metadata label'],
                             'value' => ['list', [ 'list', ['string', 'ontology term and ID'] ]]}, 'list of CV terms for metadata'] ],
@@ -145,7 +150,7 @@ sub info {
                                  'metadata version lookup' ],
               'method'      => "GET",
               'type'        => "synchronous",
-              'attributes'  => {},
+              'attributes'  => $self->attributes->{version},
               'parameters'  => { 'options'  => { 'label' => ['string', 'metadata label'] },
                                  'required' => {},
                                  'body'     => {} }
@@ -243,7 +248,7 @@ sub info {
                                                            ['env_package', 'label belongs to env_package metadata']]],
                                    	 'label'    => ['string', 'metadata label'],
                                    	 'value'    => ['string', 'metadata value'],
-                                   	 'version'  => ['string', 'version of CV select list or ontology to use']
+                                   	 'version'  => ['string', 'version of CV ontology to use']
                                 }}
             } ]
     };
@@ -266,6 +271,8 @@ sub request {
         $self->validate_value();
     } elsif (($self->rest->[0] =~ /^(validate|import|update)$/) && ($self->method eq 'POST')) {
         $self->process_file($self->rest->[0]);
+    } elsif ($self->rest->[0] eq 'google') {
+      $self->google($self->rest->[1]);
     } else {
         $self->info();
     }
@@ -314,7 +321,7 @@ sub static {
             while ( ($label, $ver) = each(%$latest) ) {
                 if (exists $self->{ontologies}{$label}) {
                     $data->{ontology}{$label} = $mddb->get_cv_ontology($label, $ver);
-                    $data->{ont_info}{$label} = $mddb->cv_ontology_info($label, $ver);
+                    $data->{ont_info}{$label} = $mddb->cv_ontology_info($label);
                 }
             }
         }
@@ -481,7 +488,7 @@ sub validate_value {
     }
     # test it
     else {
-        my ($is_valid, $err_msg) = @{ $mddb->validate_value($cat, $label, $value) };
+        my ($is_valid, $err_msg) = @{ $mddb->validate_value($cat, $label, $value, $ver) };
         if ($is_valid) {
 	        $data = {is_valid => 1, message => undef};
         } else {
@@ -636,6 +643,35 @@ sub process_file {
     }
     
     $self->return_data($data);
+}
+
+sub google {
+  my ($self, $id) = @_;
+
+  # if there is an id, create the preference
+  if ($id) {
+    my $pref = $self->user->_master->Preferences->create({ user => $self->user,
+							   name => 'UploadMetadataNode',
+							   value => $id });
+    if (ref($pref)) {
+      $self->return_data({"OK" => "preference created"}, 200);
+    } else {
+      $self->return_data({"ERROR" => "unable to create preference node"}, 500);
+    }
+  }
+  # otherwise, return the file
+  else {
+  
+    my $nodeid = $self->user->_master->Preferences->get_objects({ user => $self->user,
+								  name => 'UploadMetadataNode' });
+    unless (scalar(@$nodeid)) {
+      $self->return_data({"ERROR" => "no upload metadata node for user found"}, 404);
+    }
+    
+    $nodeid = $nodeid->[0]->value;
+    
+    $self->return_shock_file($nodeid, undef, "metadata", $self->token, $self->user_auth);
+  }
 }
 
 1;

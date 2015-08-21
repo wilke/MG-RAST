@@ -334,7 +334,7 @@ sub job_action {
             # check params
             delete $post->{metagenome_id};
             foreach my $key (keys %{$self->{create_param}}) {
-                if (($key eq 'metagenome_id') || ($key eq 'input_id')) {
+                if (($key eq 'metagenome_id') || ($key eq 'input_id') || ($key eq 'submission')) {
                     next;
                 }
                 if (! exists($post->{$key})) {
@@ -381,26 +381,6 @@ sub job_action {
                     awe_id => $aid,
                     log    => join("\n", @log)
                 };
-                # update job attribute
-                $job->data("pipeline_id", $aid);
-                # update inbox attributes if submit
-                if ($post->{input_id} && ($action eq 'submit')) {
-                    my $node = $self->get_shock_node($post->{input_id}, $self->token, $self->user_auth);
-                    my $attr = $node->{attributes};
-                    my $action = {
-                        id => $aid,
-                        name => "pipeline",
-                        status => "queued",
-                        start => strftime("%Y-%m-%dT%H:%M:%S", gmtime)
-                    };
-                    if (exists $attr->{actions}) {
-                        push @{$attr->{actions}}, $action;
-                    } else {
-                        $attr->{actions} = [$action];
-                    }
-                    $self->update_shock_node($post->{input_id}, $attr, $self->token, $self->user_auth);
-                    $self->edit_shock_acl($post->{input_id}, $self->token, 'mgrast', 'put', 'all', $self->user_auth);
-                }
             } else {
                 $self->return_data( {"ERROR" => "Unknown error, missing AWE job ID:\n".join("\n", @log)}, 500 );
             }

@@ -837,6 +837,37 @@ sub set_shock_node {
     }
 }
 
+# add a file to existing shock node
+# file is json struct by default
+sub put_shock_file {
+    my ($self, $name, $file, $node, $auth, $not_json, $authPrefix) = @_;
+    
+    if (! $authPrefix) {
+      $authPrefix = "OAuth";
+    }
+    my $response = undef;
+    my $file_str = $not_json ? $file : $self->json->encode($file);
+    my $content->{upload} = [undef, $name, Content => $file_str];
+    eval {
+        my @args = (
+            $auth ? ('Authorization', "$authPrefix $auth") : (),
+            'Content_Type', 'multipart/form-data',
+            $content ? ('Content', $content) : ()
+        );
+        my $req = POST($Conf::shock_url.'/node/'.$node, @args);
+        $req->method('PUT');
+        my $put = $self->agent->request($req);
+        $response = $self->json->decode( $put->content );
+    };
+    if ($@ || (! ref($response))) {
+        return undef;
+    } elsif (exists($response->{error}) && $response->{error}) {
+        $self->return_data( {"ERROR" => "Unable to PUT to Shock: ".$response->{error}[0]}, $response->{status} );
+    } else {
+        return $response->{data};
+    }
+}
+
 # set node file_name
 sub update_shock_node_file_name {
     my ($self, $id, $fname, $auth, $authPrefix) = @_;
@@ -1153,7 +1184,10 @@ sub get_awe_query {
     }
 
     my $response = undef;
-    my $query = '?query&limit=0';
+    my $query = '?query';
+    unless (exists $params->{'limit'}) {
+        $query .= '&limit=0';
+    }
     if ($params && (scalar(keys %$params) > 0)) {
         while (my ($key, $value) = each %$params) {
             if (ref($value)) {
@@ -1279,6 +1313,50 @@ sub empty_awe_task {
 ############################
 #  other server functions  #
 ############################
+
+sub cassandra_m5nr_handle {
+    my ($self, $keyspace, $hosts) = @_;
+    
+    unless ($keyspace && $hosts && (@$hosts > 0)) {
+        $self->return_data( {"ERROR" => "Unable to connect to cassandra cluster"}, 500 );
+    }
+
+    use Inline::Python qw(py_eval);
+    my $python = q(
+from cassandra.cluster import Cluster
+from cassandra.policies import RetryPolicy
+from cassandra.query import dict_factory
+
+class CassHandle(object):
+    def __init__(self, keyspace, hosts):
+        self.handle = Cluster(
+            contact_points = hosts,
+            default_retry_policy = RetryPolicy()
+        )
+        self.session = self.handle.connect(keyspace)
+        self.session.default_timeout = 300
+        self.session.row_factory = dict_factory
+        self.id_prep = self.session.prepare("SELECT * FROM id_annotation WHERE id IN ? AND source=?")
+        self.md5_prep = self.session.prepare("SELECT * FROM md5_annotation WHERE md5 IN ? AND source=?")
+    def get_records_by_id(self, ids, source):
+        found = []
+        rows = self.session.execute(self.id_prep, [set(ids), source])
+        for r in rows:
+            r['is_protein'] = 1 if r['is_protein'] else 0
+            found.append(r)
+        return found
+    def get_records_by_md5(self, md5s, source):
+        found = []
+        rows = self.session.execute(self.md5_prep, [set(md5s), source])
+        for r in rows:
+            r['is_protein'] = 1 if r['is_protein'] else 0
+            found.append(r)
+        return found
+);
+    
+    py_eval($python);
+    return Inline::Python::Object->new('__main__', 'CassHandle', $keyspace, $hosts);
+}
 
 sub get_solr_query {
     my ($self, $method, $server, $collect, $query, $sort, $offset, $limit, $fields) = @_;
@@ -1436,12 +1514,25 @@ sub get_barcode_files {
     if ($err) {
         $self->return_data( {"ERROR" => $err}, 500 );
     }
-    foreach my $line (split(/\n/, $bar_text)) {
-        next unless ($line);
-        my ($b, $n) = split(/\t/, $line);
-        next unless ($b);
-        my $fname = $n ? $n : $b;
-        $bar_files->{$fname} = 1;
+    my @lines = split(/\n/, $bar_text);
+    # QIIME barcode format
+    if ($lines[0] =~ /^\#SampleID\tBarcodeSequence/) {
+        shift @lines;
+        foreach my $line (@lines) {
+            next unless ($line);
+            my @parts = split(/\t/, $line);
+            $bar_files->{$parts[0]} = 1;
+        }
+    }
+    # simple barcode format
+    else {
+        foreach my $line (@lines) {
+            next unless ($line);
+            my ($b, $n) = split(/\t/, $line);
+            next unless ($b);
+            my $fname = $n ? $n : $b;
+            $bar_files->{$fname} = 1;
+        }
     }
     if (scalar(keys %$bar_files) < 2) {
         $self->return_data( {"ERROR" => "number of barcodes in barcode_file must be greater than 1"}, 400 );
@@ -1585,16 +1676,16 @@ sub metadata_validation {
 # if input node has no dependency, then value is -1 and it is a shock node id,
 # otherwise shock node does not exist and its a filename
 # returns 1 task
-sub build_index_bc_task {
-    my ($self, $taskid, $depend, $index, $outprefix, $auth, $authPrefix) = @_;
+sub build_index_merge_task {
+    my ($self, $taskid, $depend_idx, $depend_seq, $index, $seq, $outfile, $auth, $authPrefix) = @_;
     
     my $idx_task = $self->empty_awe_task(1);
-    $idx_task->{cmd}{description} = "build barcodes";
-    $idx_task->{cmd}{name} = "index2barcode.py";
+    $idx_task->{cmd}{description} = "merge index barcodes";
+    $idx_task->{cmd}{name} = "merge_index.py";
     $idx_task->{taskid} = "$taskid";
     
     # index node exist - no dependencies
-    if ($depend < 0) {
+    if ($depend_idx < 0) {
         # get / verify nodes
         my $idx_node = $self->node_from_inbox_id($index, $auth, $authPrefix);
         unless (exists $idx_node->{attributes}{stats_info}) {
@@ -1604,12 +1695,27 @@ sub build_index_bc_task {
         $idx_task->{inputs}{$index} = {host => $Conf::shock_url, node => $idx_node->{id}};
         $idx_task->{userattr}{parent_index_file} = $idx_node->{id};
     } else {
-        $idx_task->{inputs}{$index} = {host => $Conf::shock_url, node => "-", origin => "$depend"};
-        push @{$idx_task->{dependsOn}}, "$depend";
+        $idx_task->{inputs}{$index} = {host => $Conf::shock_url, node => "-", origin => "$depend_idx"};
+        push @{$idx_task->{dependsOn}}, "$depend_idx";
     }
-    $idx_task->{outputs}{"$outprefix.barcodes"} = {host => $Conf::shock_url, node => "-", attrfile => "userattr.json"};
-    $idx_task->{cmd}{args} = '-r -i @'.$index." -p $outprefix -o $outprefix.barcodes";
-    $idx_task->{userattr}{stage_name} = "build_barcodes";
+    # seq node exist - no dependencies
+    if ($depend_seq < 0) {
+        # get / verify nodes
+        my $seq_node = $self->node_from_inbox_id($seq, $auth, $authPrefix);
+        unless (exists $seq_node->{attributes}{stats_info}) {
+            ($seq_node, undef) = $self->get_file_info(undef, $seq_node, $auth, $authPrefix);
+        }
+        $seq = $seq_node->{file}{name};
+        $idx_task->{inputs}{$seq} = {host => $Conf::shock_url, node => $seq_node->{id}};
+        $idx_task->{userattr}{parent_index_file} = $seq_node->{id};
+    } else {
+        $idx_task->{inputs}{$seq} = {host => $Conf::shock_url, node => "-", origin => "$depend_seq"};
+        push @{$idx_task->{dependsOn}}, "$depend_seq";
+    }
+    
+    $idx_task->{outputs}{$outfile} = {host => $Conf::shock_url, node => "-", attrfile => "userattr.json"};
+    $idx_task->{cmd}{args} = '-i @'.$index.' -s @'.$seq.' -o '.$outfile;
+    $idx_task->{userattr}{stage_name} = "merge_index";
     
     return $idx_task;
 }
@@ -1714,7 +1820,7 @@ sub build_sff_fastq_task {
 # otherwise shock node does not exist and its a filename
 # returns array of 2 tasks
 sub build_pair_join_task {
-    my ($self, $taskid, $depend_p1, $depend_p2, $depend_idx, $pair1, $pair2, $index, $bc_num, $outprefix, $retain, $auth, $authPrefix) = @_;
+    my ($self, $taskid, $depend_p1, $depend_p2, $depend_idx, $pair1, $pair2, $index, $outprefix, $retain, $auth, $authPrefix) = @_;
     
     my $pj_task = $self->empty_awe_task(1);
     $pj_task->{cmd}{description} = "merge mate-pairs";
@@ -1755,10 +1861,7 @@ sub build_pair_join_task {
     }
     # has index file
     my $index_opt = "";
-    if ($index && $bc_num) {
-        if ($bc_num < 2) {
-            $self->return_data( {"ERROR" => "barcode_count value must be greater than 1"}, 400 );
-        }
+    if ($index) {
         # index node exist - no dependencies
         if ($depend_idx < 0) {
             my $idx_node = $self->node_from_inbox_id($index, $auth, $authPrefix);
@@ -1781,7 +1884,7 @@ sub build_pair_join_task {
     my $retain_opt = $retain ? "" : "-j ";
     my $out_file = $outprefix.".fastq";
     $pj_task->{outputs}{$out_file} = {host => $Conf::shock_url, node => "-", attrfile => "userattr.json"};
-    $pj_task->{cmd}{args} = $retain_opt.$index_opt.'-m 8 -p 10 -t . -r -o '.$out_file.' @'.$pair1.' @'.$pair2;
+    $pj_task->{cmd}{args} = $retain_opt.$index_opt.'-m 8 -p 10 -t . -o '.$out_file.' @'.$pair1.' @'.$pair2;
     $pj_task->{userattr}{stage_name} = "pair_join";
     
     # build seq stats task - not sff file
@@ -1793,7 +1896,7 @@ sub build_pair_join_task {
 # otherwise shock node does not exist and its a filename
 # returns array of 2 or more tasks
 sub build_demultiplex_task {
-    my ($self, $taskid, $depend_seq, $depend_bc, $seq, $barcode, $bc_num, $auth, $authPrefix) = @_;
+    my ($self, $taskid, $depend_seq, $depend_bc, $seq, $barcode, $rc_bar, $auth, $authPrefix) = @_;
     
     my $seq_type = "";
     my $bc_names = [];
@@ -1829,11 +1932,11 @@ sub build_demultiplex_task {
         $dm_task->{inputs}{$barcode} = {host => $Conf::shock_url, node => $bc_node->{id}};
         $dm_task->{userattr}{parent_barcode_file} = $bc_node->{id};
     } else {
-        $dm_task->{inputs}{$barcode} = {host => $Conf::shock_url, node => "-", origin => "$depend_bc"};
-        push @{$dm_task->{dependsOn}}, "$depend_bc";
-        @$bc_names = map { "$basename.$_" } (1..$bc_num);
-    }    
-    $dm_task->{cmd}{args} = '-f '.$seq_type.' -b @'.$barcode.' -i @'.$seq;
+        $self->return_data( {"ERROR" => "missing barcode file $barcode"}, 400 );
+    }
+    
+    my $rc_bar_opt = $rc_bar ? "" : "-r ";
+    $dm_task->{cmd}{args} = $rc_bar_opt.'-f '.$seq_type.' -b @'.$barcode.' -i @'.$seq;
     
     # build outputs
     push @$bc_names, "nobarcode.".$basename;

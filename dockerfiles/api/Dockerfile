@@ -27,6 +27,9 @@ RUN apt-get update && apt-get install -y \
   liblist-allutils-perl \
   libposix-strptime-perl \
   libuuid-tiny-perl \
+  libmongodb-perl \
+  libfreezethaw-perl \
+  libtemplate-perl \
   libclass-isa-perl
 
 RUN mkdir -p /var/log/httpd/api.metagenomics/ && \
@@ -34,21 +37,31 @@ RUN mkdir -p /var/log/httpd/api.metagenomics/ && \
   git clone -b api https://github.com/MG-RAST/MG-RAST.git && \
   cd /MG-RAST && \
   make && \
+  make api-doc && \
   cd site/CGI && \
   rm -fv metagenomics.cgi linkin.cgi m5nr.cgi m5nr_rest.cgi
 
 # R dependencies
-RUN apt-get install -y r-base r-cran-nlme r-cran-ecodist && \
+RUN apt-get install -y r-base r-cran-nlme r-cran-ecodist r-cran-rcolorbrewer r-cran-xml && \
   echo 'install.packages("matlab", repos = "http://cran.wustl.edu")' | R --no-save && \
-  echo 'source("http://bioconductor.org/biocLite.R"); biocLite("pcaMethods")' | R --no-save
+  echo 'source("http://bioconductor.org/biocLite.R"); biocLite("pcaMethods"); biocLite("preprocessCore"); biocLite("DESeq")' | R --no-save
 
 # pipeline dependencies
-RUN apt-get install -y \
-  python-dev \
-  python-pip \
-  libtemplate-perl
-RUN pip install gspread xlrd openpyxl lepl
-RUN cd / && git clone https://github.com/MG-RAST/pipeline.git
+RUN apt-get install -y python-dev python-pip && \
+  pip install openpyxl==1.8.6 && \
+  pip install gspread xlrd lepl cassandra-driver && \
+  cd / && \
+  git clone https://github.com/MG-RAST/pipeline.git && \
+  cd pipeline && \
+  ln -s /MG-RAST/site/CGI/Tmp temp
+
+ENV PERL_MM_USE_DEFAULT 1
+RUN cpan Inline::Python
+
+# setup sendmail
+RUN DEBIAN_FRONTEND=noninteractive apt-get -y install postfix && \
+  cp /usr/share/postfix/main.cf.debian /etc/postfix/main.cf && \
+  postconf -e relayhost=[smtp.mcs.anl.gov]
 
 RUN mkdir -p /sites/1/ && \
   cd /sites/1/ && \
@@ -67,4 +80,5 @@ RUN mkdir -p /m5nr && \
   ln -s /api-server-data/20131215 /m5nr/20131215
 
 # Execute:
+# /etc/init.d/postfix start
 # /usr/local/apache2/bin/httpd -DFOREGROUND -f /api-server-conf/httpd.conf
