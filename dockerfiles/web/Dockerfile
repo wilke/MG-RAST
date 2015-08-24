@@ -8,6 +8,7 @@ RUN apt-get update && apt-get install -y \
   git-core \
   libpq-dev \
   make \
+  curl \
   perl-modules \
   liburi-perl \
   libwww-perl \
@@ -41,7 +42,9 @@ RUN cd / && \
 RUN cd / && git clone --recursive https://github.com/MG-RAST/MG-RASTv4.git && \
   cp -vr /MG-RASTv4/* /MG-RAST/site/CGI/Html/ && \
   rm -vf /MG-RAST/site/CGI/Html/*.html && \
-  cp -v /MG-RASTv4/mgmainv3.html /MG-RAST/site/CGI/Html/
+  cp -v /MG-RASTv4/mgmainv3.html /MG-RAST/site/CGI/Html/ && \
+  rm -vf /MG-RAST/site/CGI/Html/js/config.js && \
+  ln -s /config/config.js /MG-RAST/site/CGI/Html/js/config.js
 
 # pipeline dependencies
 RUN apt-get install -y python-dev python-pip && \
@@ -64,6 +67,11 @@ RUN cd /tools && \
   cd FragGeneScan && \
   make clean && \
   make fgs
+
+# kegg map data
+RUN mkdir -p /data && \
+  curl -s "http://shock.metagenomics.anl.gov/node/da268d29-918c-4205-8884-e6f3b175fe58?download" | tar -xvf - -C /data
+  
 
 # setup sendmail
 RUN DEBIAN_FRONTEND=noninteractive apt-get -y install postfix && \
